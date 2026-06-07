@@ -1,0 +1,3 @@
+display_name: Jira CLI
+short_description: Use the jira CLI for private Jira agent workflows.
+default_prompt: Use the jira-cli skill to interact with private Jira through the `jira` command. Start compact, probe capabilities when unknown, and avoid destructive commands unless explicitly authorized.

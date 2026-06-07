@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+.omx/
+.tmp/
+bin/
+coverage.out
+dist/
