@@ -123,7 +123,8 @@ jira delete JCLI-123 --yes
 - Use dashboard item property set/delete only with `--dry-run` or `--yes`; the
   CLI does not support private dashboard layout or gadget-management endpoints.
 - Use issue property set/delete and `jira api` writes only with `--dry-run` or
-  `--yes`.
+  `--yes`; live `jira api` writes under `/rest/agile/1.0` also require
+  `--force`.
 - Use normal Jira writes such as create, update, comment, assign, transition,
   watch, worklog add, link create/delete, and Agile move only with `--dry-run`
   or `--yes`.

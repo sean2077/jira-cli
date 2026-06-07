@@ -87,8 +87,9 @@ curl_asset_api() {
 }
 
 asset_api_url() {
+  wanted_asset="$1"
   release_json="$(curl_text "https://api.github.com/repos/$REPO/releases/tags/$VERSION")"
-  printf '%s\n' "$release_json" | awk -v asset="$asset" '
+  printf '%s\n' "$release_json" | awk -v asset="$wanted_asset" '
     /^[[:space:]]*"url":[[:space:]]*"https:\/\/api.github.com\/repos\/.*\/releases\/assets\// {
       url = $0
       sub(/^[[:space:]]*"url":[[:space:]]*"/, "", url)
@@ -152,11 +153,12 @@ esac
 asset="jira_${VERSION}_${os}_${arch}"
 url="https://github.com/$REPO/releases/download/$VERSION/$asset"
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT INT TERM
+checksums_tmp="$(mktemp)"
+trap 'rm -f "$tmp" "$checksums_tmp"' EXIT INT TERM
 
 echo "Downloading $url"
 if [ -n "$TOKEN" ]; then
-  api_url="$(asset_api_url)"
+  api_url="$(asset_api_url "$asset")"
   if [ -z "$api_url" ]; then
     echo "ERR could not find release asset $asset in $REPO@$VERSION" >&2
     exit 1
@@ -171,6 +173,37 @@ if [ "$download_cmd_status" -ne 0 ]; then
   echo "ERR download failed. If $REPO is private, export GH_TOKEN or GITHUB_TOKEN with repo read access." >&2
   exit 1
 fi
+
+echo "Downloading checksums.txt"
+if [ -n "$TOKEN" ]; then
+  checksums_api_url="$(asset_api_url "checksums.txt")"
+  if [ -z "$checksums_api_url" ]; then
+    echo "ERR could not find release asset checksums.txt in $REPO@$VERSION" >&2
+    exit 1
+  fi
+  curl_asset_api -o "$checksums_tmp" "$checksums_api_url"
+else
+  curl_download -o "$checksums_tmp" "https://github.com/$REPO/releases/download/$VERSION/checksums.txt"
+fi
+
+expected_sha="$(awk -v asset="$asset" '$2 == asset || $2 == "./" asset { print $1; exit }' "$checksums_tmp")"
+if [ -z "$expected_sha" ]; then
+  echo "ERR checksums.txt does not include $asset" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_sha="$(sha256sum "$tmp" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual_sha="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+else
+  echo "ERR missing required command: sha256sum or shasum" >&2
+  exit 1
+fi
+if [ "$actual_sha" != "$expected_sha" ]; then
+  echo "ERR checksum mismatch for $asset" >&2
+  exit 1
+fi
+echo "Verified checksum for $asset"
 chmod 0755 "$tmp"
 
 if [ ! -d "$INSTALL_DIR" ]; then

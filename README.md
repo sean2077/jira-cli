@@ -23,7 +23,8 @@ operations explicit with `--dry-run` and `--yes`.
 For endpoints that do not need a first-class command yet, `jira api` provides a
 guarded public JSON REST pass-through for `/rest/api/2` and `/rest/agile/1.0`.
 It rejects absolute URLs, `latest`, auth-session paths, traversal, embedded
-query strings, and fragments; write methods require `--dry-run` or `--yes`.
+query strings, and fragments; write methods require `--dry-run` or `--yes`, and
+live Agile pass-through writes also require `--force`.
 
 ## Install
 

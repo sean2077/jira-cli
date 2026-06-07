@@ -69,7 +69,7 @@ direnv exec . go test ./internal/cli -run TestLive -count=1 -v
 | `dashboard item property delete --yes` | yes | no | destructive guard plus fake delete |
 | `api get` | yes | no | guarded public JSON REST pass-through |
 | `api post/put/delete --dry-run` | yes | no | no Jira access |
-| `api post/put/delete --yes` | yes | no | write guard plus fake server |
+| `api post/put/delete --yes` | yes | no | write guard plus fake server; Agile live writes require `--force` |
 | `issue properties` | yes | no | read-only |
 | `issue property` | yes | no | read-only |
 | `issue property set --dry-run` | yes | no | no Jira access |

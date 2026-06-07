@@ -107,7 +107,9 @@ Use CLI-owned stable schemas:
 ```
 
 Do not expose raw Jira JSON as the default `--json` shape. Raw Jira JSON belongs
-behind `--raw`.
+behind `--raw`. Discovery commands whose Jira Server 8.1 schemas vary by
+permissions or plugins may use a stable `{ok, kind, raw}` wrapper in `--json`;
+the wrapper is stable, while the nested `raw` payload is explicitly raw-backed.
 
 ### Raw
 
@@ -245,6 +247,10 @@ Must expose read-only compact, `--json`, and `--raw` output for:
 - `jira mypermissions [--project KEY|--issue KEY]`
 - `jira resolutions` and `jira resolution <ID>`
 
+`role`, `project-statuses`, `permissions`, and `mypermissions` may use the
+stable `{ok, kind, raw}` JSON wrapper because Jira Server can vary these payloads
+by permission model, plugins, and project configuration.
+
 ### `jira api get|post|put|delete <PATH>`
 
 Purpose: guarded public JSON REST pass-through for documented Jira Server 8.1
@@ -261,6 +267,8 @@ Must:
 - support `--body JSON` for non-GET methods
 - reject `api get ... --body`
 - require `--dry-run` or `--yes` for non-GET methods
+- require `--force` in addition to `--yes` for live `/rest/agile/1.0` writes;
+  `--dry-run` remains available without configuration
 - preserve unmodified Jira response bodies with `--raw`
 - keep multipart upload, attachment content, avatar upload, and special-header
   flows out of generic pass-through; use typed attachment commands for issue

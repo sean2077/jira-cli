@@ -344,7 +344,7 @@ Writes:
   jira move backlog --issue KEY [--dry-run|--yes]
   jira dashboard item property set <DASHBOARD_ID> <ITEM_ID> <KEY> --body JSON [--dry-run|--yes]
   jira dashboard item property delete <DASHBOARD_ID> <ITEM_ID> <KEY> [--dry-run|--yes]
-  jira api post|put|delete <PATH> [--body JSON] [--dry-run|--yes]
+  jira api post|put|delete <PATH> [--body JSON] [--dry-run|--yes] [--force for Agile writes]
 
 Config:
   jira config doctor

@@ -207,6 +207,10 @@ func Execute(ctx context.Context, opts Options, args []string, stdout, stderr io
 		fmt.Fprintln(stderr, "ERR usage missing command")
 		return 1
 	}
+	if err := validateCommandArity(args); err != nil {
+		fmt.Fprintf(stderr, "ERR usage %s\n", err)
+		return 1
+	}
 
 	mode := output.ModeFromOptions(opts.JSON, opts.Raw)
 	switch args[0] {
@@ -533,6 +537,116 @@ func Execute(ctx context.Context, opts Options, args []string, stdout, stderr io
 	}
 }
 
+func validateCommandArity(args []string) error {
+	switch args[0] {
+	case "config", "skill", "api":
+		return nil
+	case "probe", "whoami", "projects", "fields", "assignable", "issuetypes", "priorities", "statuses", "resolutions", "workflows", "filters", "permissions", "mypermissions", "create", "boards", "dashboards", "mine", "stale", "blockers":
+		if len(args) != 1 {
+			return fmt.Errorf("%s does not accept positional arguments", args[0])
+		}
+	case "search":
+		if len(args) != 2 {
+			return fmt.Errorf("search requires JQL")
+		}
+	case "issue":
+		switch {
+		case len(args) == 2:
+			return nil
+		case len(args) == 3 && args[1] == "properties":
+			return nil
+		case len(args) == 4 && args[1] == "property":
+			return nil
+		case len(args) == 5 && args[1] == "property":
+			return nil
+		default:
+			return fmt.Errorf("expected issue <KEY>, issue properties <KEY>, or issue property [set|delete] <KEY> <PROPERTY>")
+		}
+	case "comments", "attachments", "links", "project", "components", "versions", "roles", "project-statuses", "resolution", "filter", "update", "assign", "transitions", "transition", "delete", "watchers", "watch", "unwatch", "worklogs", "remote-links", "backlog", "sprints":
+		if len(args) != 2 {
+			return fmt.Errorf("%s requires exactly one argument", args[0])
+		}
+	case "attachment":
+		switch {
+		case len(args) == 2:
+			return nil
+		case len(args) == 3 && (args[1] == "add" || args[1] == "get" || args[1] == "download" || args[1] == "delete"):
+			return nil
+		default:
+			return fmt.Errorf("expected attachment <ID> or attachment add|get|download|delete <ID_OR_KEY>")
+		}
+	case "role", "remote-link":
+		if len(args) != 3 {
+			return fmt.Errorf("%s requires exactly two arguments", args[0])
+		}
+	case "users":
+		if len(args) != 2 || args[1] != "search" {
+			return fmt.Errorf("expected users search --query TEXT")
+		}
+	case "comment":
+		switch {
+		case len(args) == 2:
+			return nil
+		case len(args) == 4 && args[1] == "get":
+			return nil
+		default:
+			return fmt.Errorf("expected comment <KEY> or comment get <KEY> <ID>")
+		}
+	case "worklog":
+		if len(args) == 3 && args[1] == "add" {
+			return nil
+		}
+		if len(args) == 4 && args[1] == "get" {
+			return nil
+		}
+		return fmt.Errorf("expected worklog add <KEY> or worklog get <KEY> <ID>")
+	case "link":
+		if len(args) == 3 && (args[1] == "create" || args[1] == "delete") {
+			return nil
+		}
+		return fmt.Errorf("expected link create|delete")
+	case "bulk":
+		if len(args) < 3 || args[1] != "search" {
+			return fmt.Errorf("expected bulk search <JQL> [<JQL>...]")
+		}
+	case "move":
+		if len(args) < 2 || (args[1] != "sprint" && args[1] != "backlog") {
+			return fmt.Errorf("expected move sprint|backlog")
+		}
+	case "dashboard":
+		switch {
+		case len(args) == 2:
+			return nil
+		case len(args) == 5 && args[1] == "item" && args[2] == "properties":
+			return nil
+		case len(args) == 6 && args[1] == "item" && args[2] == "property":
+			return nil
+		case len(args) == 7 && args[1] == "item" && args[2] == "property" && (args[3] == "set" || args[3] == "delete"):
+			return nil
+		default:
+			return fmt.Errorf("expected dashboard <ID> or dashboard item properties|property")
+		}
+	case "board":
+		if len(args) == 2 || (len(args) == 3 && args[1] == "issues") {
+			return nil
+		}
+		return fmt.Errorf("expected board <ID> or board issues <ID>")
+	case "sprint":
+		if len(args) == 2 || (len(args) == 3 && (args[1] == "issues" || args[1] == "summary")) {
+			return nil
+		}
+		return fmt.Errorf("expected sprint <ID>, sprint issues <ID>, or sprint summary [ID]")
+	case "epic":
+		if len(args) == 2 || (len(args) == 3 && args[1] == "issues") {
+			return nil
+		}
+		return fmt.Errorf("expected epic <KEY_OR_ID> or epic issues <KEY_OR_ID>")
+	default:
+		return nil
+	}
+	return nil
+}
+
 func runConfig(opts Options, args []string, stdout, stderr io.Writer, rt Runtime) int {
 	if len(args) != 1 || args[0] != "doctor" {
 		fmt.Fprintln(stderr, "ERR usage expected config doctor")
@@ -758,7 +872,7 @@ func runAPIPassThrough(ctx context.Context, opts Options, args []string, stdout,
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
-	if err := validateAPIPassThroughEndpoint(api, method, segments); err != nil {
+	if err := validateAPIPassThroughEndpoint(api, method, segments, opts.DryRun || opts.CommandBools["--force"]); err != nil {
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
@@ -3750,7 +3864,13 @@ func parsePublicRESTPath(rawPath string) (jira.API, []string, string, error) {
 	return api, segments, prefix + "/" + strings.Join(segments, "/"), nil
 }
 
-func validateAPIPassThroughEndpoint(api jira.API, method string, segments []string) error {
+func validateAPIPassThroughEndpoint(api jira.API, method string, segments []string, riskyWriteAllowed bool) error {
+	if api == jira.AgileAPI {
+		if method != http.MethodGet && !riskyWriteAllowed {
+			return fmt.Errorf("api pass-through Agile writes require --force in addition to --yes; prefer typed Agile commands")
+		}
+		return nil
+	}
 	if api != jira.PlatformAPI {
 		return nil
 	}

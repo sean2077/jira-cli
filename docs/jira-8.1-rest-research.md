@@ -216,6 +216,8 @@ Safety boundary:
 - rejects absolute URLs, scheme-relative URLs, `latest`, auth session paths,
   traversal, encoded slash/traversal, embedded query strings, and fragments
 - write methods require `--dry-run` or `--yes`
+- live Agile pass-through writes require `--force` in addition to `--yes` because
+  typed Agile commands provide safer previews for common workflows
 - JSON bodies are validated and sent as JSON values, preserving large numeric
   literals through the raw-message pattern used by entity properties
 - multipart/binary/special-header flows remain out of generic pass-through;

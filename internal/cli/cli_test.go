@@ -53,7 +53,7 @@ func TestHelpIsConciseAndExampleDriven(t *testing.T) {
 		"jira attachment add <KEY> --file PATH [--dry-run|--yes]",
 		"jira filters | filter <ID> | users search --query TEXT | assignable --project KEY",
 		"jira api get <PATH> [--query k=v] [--raw]",
-		"jira api post|put|delete <PATH> [--body JSON] [--dry-run|--yes]",
+		"jira api post|put|delete <PATH> [--body JSON] [--dry-run|--yes] [--force for Agile writes]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing new API surface %q in:\n%s", want, out)
@@ -640,6 +640,51 @@ func TestAPIPassThroughAgainstFakeServer(t *testing.T) {
 	if !postCalled {
 		t.Fatal("api post was not called")
 	}
+}
+
+func TestAPIPassThroughAgileWriteRequiresForce(t *testing.T) {
+	var called bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/sprint/7/issue", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Method != http.MethodPost {
+			t.Fatalf("agile write method = %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	rt := runtimeForServer(server)
+
+	t.Run("dry run does not require force", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := MainWithRuntime([]string{"api", "post", "agile/1.0/sprint/7/issue", "--body", `{"issues":["JCLI-1"]}`, "--dry-run"}, &stdout, &stderr, Runtime{})
+		if code != 0 || !strings.Contains(stdout.String(), "DRY-RUN api_post") {
+			t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("yes without force is rejected before http", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := MainWithRuntime([]string{"api", "post", "agile/1.0/sprint/7/issue", "--body", `{"issues":["JCLI-1"]}`, "--yes"}, &stdout, &stderr, rt)
+		if code != 1 || !strings.Contains(stderr.String(), "Agile writes require --force") {
+			t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+		if called {
+			t.Fatal("agile write guard allowed an HTTP request")
+		}
+	})
+
+	t.Run("yes force is explicit escape hatch", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := MainWithRuntime([]string{"api", "post", "agile/1.0/sprint/7/issue", "--body", `{"issues":["JCLI-1"]}`, "--yes", "--force"}, &stdout, &stderr, rt)
+		if code != 0 {
+			t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+		if got, want := stdout.String(), "OK api_post path=/rest/agile/1.0/sprint/7/issue status=204\n"; got != want {
+			t.Fatalf("stdout = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestAPIPassThroughRejectsUnsafePathsBeforeHTTP(t *testing.T) {
@@ -1900,6 +1945,39 @@ func TestDestructiveCommandGuards(t *testing.T) {
 	}
 	if called {
 		t.Fatal("destructive guard allowed an HTTP request")
+	}
+}
+
+func TestExtraPositionalsRejectedBeforeExecution(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+	rt := runtimeForServer(server)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "read issue", args: []string{"issue", "JCLI-1", "EXTRA"}},
+		{name: "update", args: []string{"update", "JCLI-1", "EXTRA", "--field", "summary=Updated", "--yes"}},
+		{name: "comment", args: []string{"comment", "JCLI-1", "EXTRA", "--body", "ignored", "--yes"}},
+		{name: "delete", args: []string{"delete", "JCLI-1", "EXTRA", "--yes"}},
+		{name: "link delete", args: []string{"link", "delete", "300", "EXTRA", "--yes"}},
+		{name: "attachment delete", args: []string{"attachment", "delete", "700", "EXTRA", "--yes"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := MainWithRuntime(tt.args, &stdout, &stderr, rt)
+			if code != 1 || !strings.Contains(stderr.String(), "ERR usage") {
+				t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+	if called {
+		t.Fatal("extra positional validation allowed an HTTP request")
 	}
 }
 
