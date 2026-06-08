@@ -45,7 +45,7 @@ curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/inst
 Pin a release only when needed:
 
 ```bash
-curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/install.sh | sh -s -- v1.1.0
+curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/install.sh | sh -s -- v1.2.0
 ```
 
 Windows PowerShell:
@@ -75,6 +75,11 @@ jira probe
 `JIRA_USER_EMAIL` can replace `JIRA_USER`, and `JIRA_PASSWORD` can replace
 `JIRA_API_TOKEN` for Jira Server password-style auth. Run `jira config doctor`
 when configuration is unclear.
+
+Authentication defaults to HTTP Basic, which is correct for Jira Server 8.1. On
+Jira Server/Data Center 8.14+ that use Personal Access Tokens (and may disable
+Basic), pass `--auth bearer` (or set `JIRA_AUTH_SCHEME=bearer`, or `auth =
+"bearer"` in a profile) to send the secret as `Authorization: Bearer <token>`.
 
 `~/.config/jira-cli/config.toml` is a Viper-backed TOML file. CLI flags win
 over environment, environment wins over profiles, and the selected profile
@@ -179,13 +184,14 @@ go vet ./...
 scripts/build-release.sh v0.0.0-test
 ```
 
-Live Jira checks are opt-in with `JIRA_LIVE_TEST=1` and the environment
-variables from `.env.example`. Release binaries are built when a `v*` tag is
-pushed; the release workflow creates or updates the GitHub Release and uploads
-the generated assets.
+Live Jira checks are opt-in with `JIRA_LIVE_TEST=1` and the `JIRA_*`
+environment variables (`JIRA_BASE_URL`, `JIRA_USER` or `JIRA_USER_EMAIL`,
+`JIRA_API_TOKEN` or `JIRA_PASSWORD`, and `JIRA_LIVE_PROJECT` for write tests).
+Release binaries are built when a `v*` tag is pushed; the release workflow
+creates or updates the GitHub Release and uploads the generated assets.
 
 ```bash
-git tag -a v1.1.0 -m v1.1.0
+git tag -a v1.2.0 -m v1.2.0
 git push origin main
-git push origin v1.1.0
+git push origin v1.2.0
 ```

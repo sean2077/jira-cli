@@ -2,6 +2,7 @@ package jira
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,8 +99,8 @@ func ParseErrorResponse(resp *http.Response, body []byte) *Error {
 }
 
 func AsCapabilityError(err error) error {
-	jiraErr, ok := err.(*Error)
-	if !ok || jiraErr.StatusCode != http.StatusNotFound {
+	var jiraErr *Error
+	if !errors.As(err, &jiraErr) || jiraErr.StatusCode != http.StatusNotFound {
 		return err
 	}
 	clone := *jiraErr

@@ -104,3 +104,48 @@ func TestDownloadURLParsesNonSuccessJiraError(t *testing.T) {
 		t.Fatalf("resp=%#v n=%d err=%#v", resp, n, jiraErr)
 	}
 }
+
+func TestDownloadURLRefusesOffHostRedirect(t *testing.T) {
+	var internalHit bool
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		internalHit = true
+		_, _ = w.Write([]byte("internal-metadata"))
+	}))
+	defer internal.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, internal.URL+"/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	client := Client{HTTPClient: redirector.Client(), Timeout: time.Second}
+	_, _, err := client.DownloadURL(context.Background(), redirector.URL+"/secure/attachment/700/proof.txt", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "refusing redirect off the Jira host") {
+		t.Fatalf("DownloadURL error = %v, want off-host redirect refusal", err)
+	}
+	if internalHit {
+		t.Fatal("client followed a server-controlled redirect off the Jira host (SSRF)")
+	}
+}
+
+func TestDownloadURLFollowsSameHostRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/secure/attachment/700/proof.txt", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/files/proof.txt", http.StatusFound)
+	})
+	mux.HandleFunc("/files/proof.txt", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("proof-body"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := Client{HTTPClient: server.Client(), Timeout: time.Second}
+	var buf strings.Builder
+	_, n, err := client.DownloadURL(context.Background(), server.URL+"/secure/attachment/700/proof.txt", &buf)
+	if err != nil {
+		t.Fatalf("same-host redirect should be followed: %v", err)
+	}
+	if buf.String() != "proof-body" || n != int64(len("proof-body")) {
+		t.Fatalf("body=%q n=%d, want proof-body", buf.String(), n)
+	}
+}

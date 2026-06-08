@@ -7,7 +7,8 @@ This project uses two coverage layers:
 - optional live Jira smoke tests for real connectivity and read-only API
   compatibility
 
-Live tests are opt-in through `.env`/`.envrc`. By default they do not create
+Live tests are opt-in through `JIRA_LIVE_TEST=1` and the `JIRA_*` environment
+variables. By default they do not create
 persistent Jira artifacts. Future live write tests must require
 `JIRA_LIVE_PROJECT`, which should point to a dedicated Jira CLI test project
 such as `JCLI`, create only `JIRA_CLI_TEST_*` artifacts in that project, and

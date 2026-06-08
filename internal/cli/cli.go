@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Version = "1.1.0-dev"
+var Version = "1.2.0-dev"
 
 type Options = commands.Options
 type Runtime = commands.Runtime
@@ -128,7 +128,6 @@ func newRootCommand(opts *Options, stdout, stderr io.Writer, rt Runtime, exitCod
 	skillInstall := leaf("install", "Install the bundled jira-cli skill", cobra.NoArgs, run("skill", "install"))
 	addStringFlag(skillInstall, &opts.Target, "target", "install root directory")
 	addBoolFlag(skillInstall, &opts.Global, "global", "install under the user skill directory")
-	root.PersistentFlags().BoolVar(&opts.Force, "force", false, "force replacement where supported")
 	skillCmd.AddCommand(skillInstall)
 	root.AddCommand(skillCmd)
 
@@ -180,6 +179,7 @@ func newRootCommand(opts *Options, stdout, stderr io.Writer, rt Runtime, exitCod
 
 	assignable := leaf("assignable", "List assignable users", cobra.NoArgs, run("assignable"))
 	addStringFlag(assignable, &opts.Project, "project", "project key")
+	addStringArrayFlag(assignable, &opts.Issues, "issue", "issue key")
 	addStringArrayFlag(assignable, &opts.Queries, "query", "username query")
 	root.AddCommand(assignable)
 
@@ -376,6 +376,9 @@ func leaf(use, short string, args cobra.PositionalArgs, run func(*cobra.Command,
 
 func issueCommand(run func(...string) func(*cobra.Command, []string) error, opts *Options) *cobra.Command {
 	issue := leaf("issue KEY", "Show an issue", cobra.ExactArgs(1), run("issue"))
+	addBoolFlag(issue, &opts.IncludeLinks, "links", "include issue links inline")
+	addBoolFlag(issue, &opts.IncludeComments, "comments", "include issue comments inline")
+	addBoolFlag(issue, &opts.IncludeWorklogs, "worklogs", "include issue worklogs inline")
 	properties := leaf("properties KEY", "List issue property keys", cobra.ExactArgs(1), run("issue", "properties"))
 	property := leaf("property KEY PROPERTY", "Show an issue property", cobra.ExactArgs(2), run("issue", "property"))
 	set := leaf("set KEY PROPERTY", "Set an issue property", cobra.ExactArgs(2), run("issue", "property", "set"))
@@ -472,9 +475,10 @@ func addGlobalFlags(cmd *cobra.Command, opts *Options) {
 	flags := cmd.PersistentFlags()
 	flags.StringVar(&opts.Profile, "profile", "", "select named profile")
 	flags.StringVar(&opts.BaseURL, "base-url", "", "override Jira base URL")
-	flags.StringVar(&opts.Type, "type", "server", "Jira type: server or cloud")
+	flags.StringVar(&opts.Type, "type", "server", "Jira type: server (cloud is not supported yet)")
 	flags.StringVar(&opts.User, "user", "", "override username")
 	flags.StringVar(&opts.TokenEnv, "token-env", "", "token/password environment variable")
+	flags.StringVar(&opts.AuthScheme, "auth", "", "auth scheme: basic (default) or bearer for Jira 8.14+ personal access tokens")
 	flags.Var(outputModeFlag{opts: opts, mode: "json"}, "json", "write stable JSON output")
 	flags.Var(outputModeFlag{opts: opts, mode: "raw"}, "raw", "write unmodified Jira response output")
 	flags.Var(outputModeFlag{opts: opts, mode: "compact"}, "compact", "write compact output")
@@ -487,6 +491,7 @@ func addGlobalFlags(cmd *cobra.Command, opts *Options) {
 	flags.DurationVar(&opts.Timeout, "timeout", 30*time.Second, "HTTP timeout")
 	flags.BoolVar(&opts.DryRun, "dry-run", false, "show intended write without executing")
 	flags.BoolVar(&opts.Yes, "yes", false, "confirm write/destructive execution")
+	flags.BoolVar(&opts.Force, "force", false, "force overwrite/replacement and risky Agile pass-through writes where supported")
 }
 
 type outputModeFlag struct {
@@ -582,8 +587,14 @@ func addBoolFlag(cmd *cobra.Command, target *bool, name, usage string) {
 }
 
 func validateOptions(opts Options) error {
-	if opts.Type != "server" && opts.Type != "cloud" {
-		return fmt.Errorf("--type must be server or cloud")
+	if opts.Type != "server" {
+		if opts.Type == "cloud" {
+			return fmt.Errorf("--type cloud is not supported yet; this CLI targets Jira Server, use --type server")
+		}
+		return fmt.Errorf("--type must be server")
+	}
+	if opts.AuthScheme != "" && !strings.EqualFold(opts.AuthScheme, "basic") && !strings.EqualFold(opts.AuthScheme, "bearer") {
+		return fmt.Errorf("--auth must be basic or bearer")
 	}
 	if opts.Limit <= 0 {
 		return fmt.Errorf("--limit must be a positive integer")
@@ -615,9 +626,9 @@ Usage:
   jira help <command>
 
 Command Groups:
-  Core: probe, whoami, search, issue, comments, worklogs, attachments, links
-  Projects: projects, project, components, versions, roles, fields, users, assignable
-  Metadata: filters, permissions, mypermissions, issuetypes, priorities, statuses, resolutions, workflows
+  Core: probe, whoami, search, issue, comments, worklogs, attachments, links, remote-links, remote-link
+  Projects: projects, project, components, versions, roles, role, project-statuses, fields, users, assignable
+  Metadata: filters, filter, permissions, mypermissions, issuetypes, priorities, statuses, resolutions, resolution, workflows
   Writes: create, update, comment, assign, transition, watch, unwatch, delete
   Attachments: attachment add|get|download|delete
   Properties: issue property, dashboard item property

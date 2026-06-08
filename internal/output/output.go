@@ -14,17 +14,6 @@ const (
 	Raw
 )
 
-func ModeFromOptions(jsonMode, rawMode bool) Mode {
-	switch {
-	case jsonMode:
-		return JSON
-	case rawMode:
-		return Raw
-	default:
-		return Compact
-	}
-}
-
 func WriteVersion(w io.Writer, mode Mode, version string) error {
 	switch mode {
 	case JSON:

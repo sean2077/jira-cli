@@ -19,6 +19,7 @@ type Values struct {
 	TokenEnv     string
 	Secret       string
 	SecretSource SecretSource
+	AuthScheme   string
 }
 
 type SecretSource struct {
@@ -33,6 +34,7 @@ type Profile struct {
 	TokenEnv string `mapstructure:"token_env"`
 	Token    string `mapstructure:"token"`
 	Password string `mapstructure:"password"`
+	Auth     string `mapstructure:"auth"`
 }
 
 type ProfileFile struct {
@@ -58,7 +60,7 @@ func Resolve(flags Values, env map[string]string, profiles ProfileFile) Values {
 	}
 	profile, hasProfile := lookupProfile(profiles.Profiles, selectedProfile)
 	if hasProfile {
-		resolved.Type = firstNonEmpty(profile.Type, resolved.Type)
+		resolved.Type = FirstNonEmpty(profile.Type, resolved.Type)
 		resolved.BaseURL = profile.BaseURL
 		resolved.User = profile.User
 	}
@@ -69,7 +71,7 @@ func Resolve(flags Values, env map[string]string, profiles ProfileFile) Values {
 	if v := env["JIRA_BASE_URL"]; v != "" {
 		resolved.BaseURL = v
 	}
-	if v := firstNonEmpty(env["JIRA_USER_EMAIL"], env["JIRA_USER"]); v != "" {
+	if v := FirstNonEmpty(env["JIRA_USER_EMAIL"], env["JIRA_USER"]); v != "" {
 		resolved.User = v
 	}
 
@@ -82,6 +84,17 @@ func Resolve(flags Values, env map[string]string, profiles ProfileFile) Values {
 	if flags.User != "" {
 		resolved.User = flags.User
 	}
+
+	if hasProfile {
+		resolved.AuthScheme = profile.Auth
+	}
+	if v := env["JIRA_AUTH_SCHEME"]; v != "" {
+		resolved.AuthScheme = v
+	}
+	if flags.AuthScheme != "" {
+		resolved.AuthScheme = flags.AuthScheme
+	}
+	resolved.AuthScheme = strings.ToLower(strings.TrimSpace(resolved.AuthScheme))
 
 	if flags.TokenEnv != "" {
 		resolved.TokenEnv = flags.TokenEnv
@@ -314,6 +327,7 @@ var allowedProfileKeys = map[string]struct{}{
 	"token_env": {},
 	"token":     {},
 	"password":  {},
+	"auth":      {},
 }
 
 func asStringMap(value any) (map[string]any, bool) {
@@ -363,7 +377,9 @@ func lookupProfile(profiles map[string]Profile, name string) (Profile, bool) {
 	return Profile{}, false
 }
 
-func firstNonEmpty(values ...string) string {
+// FirstNonEmpty returns the first non-empty string in values, or "" if all are
+// empty. It is the single shared implementation aliased by other packages.
+func FirstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
 			return value

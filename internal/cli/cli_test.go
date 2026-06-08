@@ -1129,6 +1129,270 @@ func TestCreateWithAttachmentAgainstFakeServer(t *testing.T) {
 	}
 }
 
+func TestCreateAttachmentRawUploadsThenPrintsRawBody(t *testing.T) {
+	tempDir := t.TempDir()
+	uploadPath := filepath.Join(tempDir, "proof.txt")
+	if err := os.WriteFile(uploadPath, []byte("proof"), 0o600); err != nil {
+		t.Fatalf("write upload file: %v", err)
+	}
+	const createBody = `{"id":"10000","key":"JCLI-10"}`
+	var uploadCalled bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("create method = %s", r.Method)
+		}
+		writeJSONBody(createBody)(w, r)
+	})
+	mux.HandleFunc("/rest/api/2/issue/JCLI-10/attachments", func(w http.ResponseWriter, r *http.Request) {
+		uploadCalled = true
+		writeJSONBody(`[{"id":"700","filename":"proof.txt","size":5}]`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--raw", "create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--attach", uploadPath, "--yes"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if !uploadCalled {
+		t.Fatal("--raw create silently dropped the attachment upload")
+	}
+	if got := stdout.String(); got != createBody {
+		t.Fatalf("stdout = %q, want unmodified raw create body %q", got, createBody)
+	}
+}
+
+func TestCreateAttachmentFailureSurfacesIssueKey(t *testing.T) {
+	const createBody = `{"id":"10000","key":"JCLI-10"}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("create method = %s", r.Method)
+		}
+		writeJSONBody(createBody)(w, r)
+	})
+	mux.HandleFunc("/rest/api/2/issue/JCLI-10/attachments", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("attachment upload must not be attempted when the local file is unreadable")
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist.txt")
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--json", "create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--attach", missing, "--yes"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 6 {
+		t.Fatalf("partial-failure exit code = %d, want 6; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"issue":"JCLI-10"`) || !strings.Contains(stdout.String(), `"ok":false`) {
+		t.Fatalf("stdout must surface the created issue key as JSON so callers do not retry, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "attachment") {
+		t.Fatalf("stderr should explain the attachment failure, got %q", stderr.String())
+	}
+}
+
+func TestAssignableAcceptsIssueFlag(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/user/assignable/search", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("issueKey"); got != "JCLI-1" {
+			t.Fatalf("issueKey query = %q, want JCLI-1", got)
+		}
+		writeJSONBody(`[{"name":"jdoe","key":"JDOE","displayName":"Jane Doe"}]`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"assignable", "--issue", "JCLI-1"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 assignable") {
+		t.Fatalf("stdout = %q, want assignable results", stdout.String())
+	}
+}
+
+func TestTypeCloudRejectedWithClearMessage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--type", "cloud", "whoami"}, &stdout, &stderr, Runtime{})
+	if code != 1 {
+		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cloud is not supported") {
+		t.Fatalf("stderr = %q, want a clear 'cloud is not supported' message", stderr.String())
+	}
+}
+
+func TestCommentsAccumulateAcrossPagesWithLimit(t *testing.T) {
+	var calls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue/JCLI-1/comment", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch start := r.URL.Query().Get("startAt"); start {
+		case "0":
+			if got := r.URL.Query().Get("maxResults"); got != "2" {
+				t.Fatalf("page1 maxResults = %q, want 2", got)
+			}
+			writeJSONBody(`{"startAt":0,"maxResults":2,"total":3,"comments":[{"id":"1","body":"c1","author":{"name":"a"}},{"id":"2","body":"c2","author":{"name":"a"}}]}`)(w, r)
+		case "2":
+			writeJSONBody(`{"startAt":2,"maxResults":2,"total":3,"comments":[{"id":"3","body":"c3","author":{"name":"a"}}]}`)(w, r)
+		default:
+			t.Fatalf("unexpected startAt %q", start)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"comments", "JCLI-1", "--page-size", "2", "--limit", "3"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 page requests for --limit across pages, got %d", calls)
+	}
+	want := "1 a c1\n2 a c2\n3 a c3\n3 comments total=3\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestUsersSearchAccumulatesBareArrayAcrossPages(t *testing.T) {
+	var calls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/user/search", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch start := r.URL.Query().Get("startAt"); start {
+		case "0":
+			writeJSONBody(`[{"name":"u1"},{"name":"u2"}]`)(w, r) // full page -> more may exist
+		case "2":
+			writeJSONBody(`[{"name":"u3"}]`)(w, r) // short page -> end
+		default:
+			t.Fatalf("unexpected startAt %q", start)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"users", "search", "--query", "u", "--page-size", "2", "--limit", "10"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 page requests for bare-array accumulation, got %d", calls)
+	}
+	out := stdout.String()
+	for _, want := range []string{"u1", "u2", "u3", "3 users"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestProbeReportsNotOkWhenCapabilityUnavailable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/serverInfo", writeJSONBody(`{"version":"8.1.0"}`))
+	mux.HandleFunc("/rest/api/2/myself", writeJSONBody(`{"name":"jdoe"}`))
+	mux.HandleFunc("/rest/api/2/search", writeJSONBody(`{"startAt":0,"maxResults":0,"total":0,"issues":[]}`))
+	mux.HandleFunc("/rest/api/2/project", writeJSONBody(`[]`))
+	mux.HandleFunc("/rest/api/2/field", writeJSONBody(`[]`))
+	mux.HandleFunc("/rest/api/2/dashboard", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+	mux.HandleFunc("/rest/agile/1.0/board", writeJSONBody(`{"maxResults":1,"values":[]}`))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--json", "probe"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	var result struct {
+		OK       bool     `json:"ok"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode probe JSON: %v", err)
+	}
+	if result.OK || len(result.Warnings) == 0 {
+		t.Fatalf("probe ok=%v warnings=%v, want ok=false with a warning when dashboards unavailable", result.OK, result.Warnings)
+	}
+}
+
+func TestIssueInlineDetailFlags(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue/JCLI-1", func(w http.ResponseWriter, r *http.Request) {
+		fields := r.URL.Query().Get("fields")
+		for _, want := range []string{"issuelinks", "comment", "worklog"} {
+			if !strings.Contains(fields, want) {
+				t.Fatalf("fields %q missing %q", fields, want)
+			}
+		}
+		writeJSONBody(`{"key":"JCLI-1","fields":{"summary":"S","status":{"name":"Open"},"priority":{"name":"P2"},"assignee":{"name":"jdoe"},"issuelinks":[{"id":"300","type":{"name":"Blocks","outward":"blocks"},"outwardIssue":{"key":"JCLI-2","fields":{"summary":"Blk","status":{"name":"Open"}}}}],"comment":{"total":1,"comments":[{"id":"101","body":"hi","author":{"name":"jdoe"}}]},"worklog":{"total":1,"worklogs":[{"id":"201","timeSpent":"1h","comment":"done","author":{"name":"jdoe"}}]}}}`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"issue", "JCLI-1", "--links", "--comments", "--worklogs"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"JCLI-1 Open P2 jdoe S", "link 300 Blocks", "comment 101 jdoe hi", "worklog 201 jdoe 1h done"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact issue missing %q in:\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = MainWithRuntime([]string{"--json", "issue", "JCLI-1", "--links", "--comments", "--worklogs"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("json code = %d, stderr = %q", code, stderr.String())
+	}
+	jout := stdout.String()
+	for _, want := range []string{`"links"`, `"comments"`, `"worklogs"`, `"JCLI-2"`, `"101"`, `"201"`} {
+		if !strings.Contains(jout, want) {
+			t.Fatalf("json issue missing %q in:\n%s", want, jout)
+		}
+	}
+}
+
+func TestBearerAuthSchemeSendsBearerHeader(t *testing.T) {
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/myself", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		writeJSONBody(`{"name":"jdoe","key":"JDOE"}`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	rt := Runtime{
+		Env:        map[string]string{"JIRA_BASE_URL": server.URL, "JIRA_USER": "jdoe", "JIRA_API_TOKEN": "pat-123"},
+		HTTPClient: server.Client(),
+	}
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--auth", "bearer", "whoami"}, &stdout, &stderr, rt)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if gotAuth != "Bearer pat-123" {
+		t.Fatalf("Authorization = %q, want %q", gotAuth, "Bearer pat-123")
+	}
+}
+
+func TestAuthSchemeInvalidRejected(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--auth", "oauth", "whoami"}, &stdout, &stderr, Runtime{})
+	if code != 1 || !strings.Contains(stderr.String(), "--auth must be basic or bearer") {
+		t.Fatalf("code = %d, stderr = %q, want clear --auth rejection", code, stderr.String())
+	}
+}
+
 func TestRawIssuePrintsUnmodifiedJiraBody(t *testing.T) {
 	raw := `not-json-from-jira`
 	mux := http.NewServeMux()

@@ -24,11 +24,12 @@ import (
 )
 
 type Options struct {
-	Profile  string
-	BaseURL  string
-	Type     string
-	User     string
-	TokenEnv string
+	Profile    string
+	BaseURL    string
+	Type       string
+	User       string
+	TokenEnv   string
+	AuthScheme string
 
 	JSON    bool
 	Raw     bool
@@ -70,6 +71,10 @@ type Options struct {
 	Force  bool
 	Global bool
 	Meta   bool
+
+	IncludeComments bool
+	IncludeWorklogs bool
+	IncludeLinks    bool
 }
 
 type Runtime struct {
@@ -754,9 +759,8 @@ func runProbe(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Ru
 		fmt.Fprintln(stderr, "ERR usage --raw is not supported for probe; use --json for structured probe results")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 
@@ -773,9 +777,8 @@ func runProbe(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Ru
 }
 
 func runWhoami(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var user jira.User
@@ -867,9 +870,8 @@ func runAPIPassThrough(ctx context.Context, opts Options, args []string, stdout,
 		}
 	}
 
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, method, api, segments, query, payload, nil)
@@ -907,9 +909,8 @@ func runSearch(ctx context.Context, opts Options, jql string, stdout, stderr io.
 }
 
 func runSearchWithKind(ctx context.Context, opts Options, jql, kind string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if mode == output.Raw {
@@ -984,9 +985,8 @@ func runBulkSearch(ctx context.Context, opts Options, jqls []string, stdout, std
 		fmt.Fprintln(stderr, "ERR usage --raw is not supported for bulk search")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	type group struct {
@@ -1057,12 +1057,21 @@ func runBulkSearch(ctx context.Context, opts Options, jqls []string, stdout, std
 }
 
 func runIssue(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{"fields": {"summary,status,priority,assignee,project,issuetype,created,updated,description"}}
+	fields := []string{"summary", "status", "priority", "assignee", "project", "issuetype", "created", "updated", "description"}
+	if opts.IncludeLinks {
+		fields = append(fields, "issuelinks")
+	}
+	if opts.IncludeComments {
+		fields = append(fields, "comment")
+	}
+	if opts.IncludeWorklogs {
+		fields = append(fields, "worklog")
+	}
+	query := url.Values{"fields": {strings.Join(fields, ",")}}
 	var issue jira.Issue
 	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key}, query, decodeOut(mode, &issue))
 	if err != nil {
@@ -1071,21 +1080,48 @@ func runIssue(ctx context.Context, opts Options, key string, stdout, stderr io.W
 	if mode == output.Raw {
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	result := struct {
-		OK    bool      `json:"ok"`
-		Kind  string    `json:"kind"`
-		Issue issueView `json:"issue"`
-	}{OK: true, Kind: "issue", Issue: toIssueView(issue)}
 	if mode == output.JSON {
+		result := struct {
+			OK       bool            `json:"ok"`
+			Kind     string          `json:"kind"`
+			Issue    issueView       `json:"issue"`
+			Links    []issueLinkView `json:"links,omitempty"`
+			Comments []commentView   `json:"comments,omitempty"`
+			Worklogs []worklogView   `json:"worklogs,omitempty"`
+		}{OK: true, Kind: "issue", Issue: toIssueView(issue)}
+		if opts.IncludeLinks {
+			result.Links = toIssueLinkViews(issue.Fields.IssueLinks)
+		}
+		if opts.IncludeComments && issue.Fields.Comment != nil {
+			result.Comments = toCommentViews(issue.Fields.Comment.Comments)
+		}
+		if opts.IncludeWorklogs && issue.Fields.Worklog != nil {
+			result.Worklogs = toWorklogViews(issue.Fields.Worklog.Worklogs)
+		}
 		return writeJSON(stdout, stderr, result)
 	}
-	return writeCompact(stdout, stderr, compactIssue(issue))
+	lines := []string{compactIssue(issue)}
+	if opts.IncludeLinks {
+		for _, link := range issue.Fields.IssueLinks {
+			lines = append(lines, "link "+compactIssueLink(link))
+		}
+	}
+	if opts.IncludeComments && issue.Fields.Comment != nil {
+		for _, comment := range issue.Fields.Comment.Comments {
+			lines = append(lines, "comment "+compactComment(comment))
+		}
+	}
+	if opts.IncludeWorklogs && issue.Fields.Worklog != nil {
+		for _, worklog := range issue.Fields.Worklog.Worklogs {
+			lines = append(lines, "worklog "+compactWorklog(worklog))
+		}
+	}
+	return writeCompact(stdout, stderr, lines...)
 }
 
 func runLinks(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var issue jira.Issue
@@ -1120,9 +1156,8 @@ func runBlockers(ctx context.Context, opts Options, stdout, stderr io.Writer, rt
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var issue jira.Issue
@@ -1158,26 +1193,34 @@ func runBlockers(ctx context.Context, opts Options, stdout, stderr io.Writer, rt
 }
 
 func runComments(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-	}
-	var page jira.CommentsResult
-	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "comment"}, query, decodeOut(mode, &page))
-	if err != nil {
-		return writeCommandError(stderr, err)
-	}
 	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+		}
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "comment"}, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	pageInfo := jira.Page{StartAt: page.StartAt, MaxResults: page.MaxResults, Total: page.Total}
-	if next, ok := jira.NextStartAt(page.StartAt, page.Total, len(page.Comments)); ok {
-		pageInfo.NextStartAt = next
+	comments, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.Comment, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		var page jira.CommentsResult
+		if _, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "comment"}, query, &page); err != nil {
+			return nil, 0, false, err
+		}
+		return page.Comments, page.Total, false, nil
+	})
+	if err != nil {
+		return writeCommandError(stderr, err)
 	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
@@ -1186,13 +1229,13 @@ func runComments(ctx context.Context, opts Options, key string, stdout, stderr i
 			Issue    string        `json:"issue"`
 			Comments []commentView `json:"comments"`
 			Page     jira.Page     `json:"page"`
-		}{OK: true, Kind: "comments", Issue: key, Comments: toCommentViews(page.Comments), Page: pageInfo})
+		}{OK: true, Kind: "comments", Issue: key, Comments: toCommentViews(comments), Page: pageInfo})
 	}
-	lines := make([]string, 0, len(page.Comments)+1)
-	for _, comment := range page.Comments {
+	lines := make([]string, 0, len(comments)+1)
+	for _, comment := range comments {
 		lines = append(lines, compactComment(comment))
 	}
-	summary := fmt.Sprintf("%d comments total=%d", len(page.Comments), page.Total)
+	summary := fmt.Sprintf("%d comments total=%d", len(comments), pageInfo.Total)
 	if pageInfo.NextStartAt > 0 {
 		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
 	}
@@ -1201,9 +1244,8 @@ func runComments(ctx context.Context, opts Options, key string, stdout, stderr i
 }
 
 func runCommentGet(ctx context.Context, opts Options, key, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var comment jira.Comment
@@ -1226,26 +1268,34 @@ func runCommentGet(ctx context.Context, opts Options, key, id string, stdout, st
 }
 
 func runWorklogs(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-	}
-	var page jira.WorklogsResult
-	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "worklog"}, query, decodeOut(mode, &page))
-	if err != nil {
-		return writeCommandError(stderr, err)
-	}
 	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+		}
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "worklog"}, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	pageInfo := jira.Page{StartAt: page.StartAt, MaxResults: page.MaxResults, Total: page.Total}
-	if next, ok := jira.NextStartAt(page.StartAt, page.Total, len(page.Worklogs)); ok {
-		pageInfo.NextStartAt = next
+	worklogs, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.Worklog, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		var page jira.WorklogsResult
+		if _, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", key, "worklog"}, query, &page); err != nil {
+			return nil, 0, false, err
+		}
+		return page.Worklogs, page.Total, false, nil
+	})
+	if err != nil {
+		return writeCommandError(stderr, err)
 	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
@@ -1254,13 +1304,13 @@ func runWorklogs(ctx context.Context, opts Options, key string, stdout, stderr i
 			Issue    string        `json:"issue"`
 			Worklogs []worklogView `json:"worklogs"`
 			Page     jira.Page     `json:"page"`
-		}{OK: true, Kind: "worklogs", Issue: key, Worklogs: toWorklogViews(page.Worklogs), Page: pageInfo})
+		}{OK: true, Kind: "worklogs", Issue: key, Worklogs: toWorklogViews(worklogs), Page: pageInfo})
 	}
-	lines := make([]string, 0, len(page.Worklogs)+1)
-	for _, worklog := range page.Worklogs {
+	lines := make([]string, 0, len(worklogs)+1)
+	for _, worklog := range worklogs {
 		lines = append(lines, compactWorklog(worklog))
 	}
-	summary := fmt.Sprintf("%d worklogs total=%d", len(page.Worklogs), page.Total)
+	summary := fmt.Sprintf("%d worklogs total=%d", len(worklogs), pageInfo.Total)
 	if pageInfo.NextStartAt > 0 {
 		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
 	}
@@ -1269,9 +1319,8 @@ func runWorklogs(ctx context.Context, opts Options, key string, stdout, stderr i
 }
 
 func runWorklogGet(ctx context.Context, opts Options, key, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var worklog jira.Worklog
@@ -1294,9 +1343,8 @@ func runWorklogGet(ctx context.Context, opts Options, key, id string, stdout, st
 }
 
 func runAttachments(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	query := url.Values{"fields": {"attachment"}}
@@ -1326,9 +1374,8 @@ func runAttachments(ctx context.Context, opts Options, key string, stdout, stder
 }
 
 func runAttachmentGet(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var attachment jira.Attachment
@@ -1378,9 +1425,8 @@ func runAttachmentAdd(ctx context.Context, opts Options, key string, stdout, std
 		fmt.Fprintln(stderr, "ERR usage attachment file must not be a directory")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var attachments []jira.Attachment
@@ -1430,9 +1476,8 @@ func runAttachmentDownload(ctx context.Context, opts Options, id string, stdout,
 		fmt.Fprintf(stderr, "ERR usage stat output file: %s\n", err)
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var attachment jira.Attachment
@@ -1487,9 +1532,8 @@ func runAttachmentDelete(ctx context.Context, opts Options, id string, stdout, s
 		fmt.Fprintln(stderr, "ERR usage attachment delete requires --dry-run or --yes")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodDelete, jira.PlatformAPI, []string{"attachment", id}, nil, nil, nil)
@@ -1503,9 +1547,8 @@ func runAttachmentDelete(ctx context.Context, opts Options, id string, stdout, s
 }
 
 func runProjects(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var projects []jira.Project
@@ -1532,9 +1575,8 @@ func runProjects(ctx context.Context, opts Options, stdout, stderr io.Writer, rt
 }
 
 func runProject(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var project jira.Project
@@ -1561,9 +1603,8 @@ func runProject(ctx context.Context, opts Options, key string, stdout, stderr io
 }
 
 func runFields(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var fields []jira.Field
@@ -1595,36 +1636,54 @@ func runUsersSearch(ctx context.Context, opts Options, stdout, stderr io.Writer,
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{
-		"username":   {queryText},
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+	if mode == output.Raw {
+		query := url.Values{
+			"username":   {queryText},
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+		}
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "search"}, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
+		return writeRaw(stdout, stderr, resp.Body)
 	}
-	var users []jira.User
-	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "search"}, query, decodeOut(mode, &users))
+	users, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.User, int, bool, error) {
+		query := url.Values{
+			"username":   {queryText},
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		var users []jira.User
+		if _, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "search"}, query, &users); err != nil {
+			return nil, 0, false, err
+		}
+		return users, -1, false, nil
+	})
 	if err != nil {
 		return writeCommandError(stderr, err)
 	}
-	if mode == output.Raw {
-		return writeRaw(stdout, stderr, resp.Body)
-	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
-			OK    bool       `json:"ok"`
-			Kind  string     `json:"kind"`
-			Users []userView `json:"users"`
-		}{OK: true, Kind: "users_search", Users: toUserViews(users)})
+			OK          bool       `json:"ok"`
+			Kind        string     `json:"kind"`
+			Users       []userView `json:"users"`
+			NextStartAt int        `json:"nextStartAt,omitempty"`
+		}{OK: true, Kind: "users_search", Users: toUserViews(users), NextStartAt: pageInfo.NextStartAt})
 	}
 	lines := make([]string, 0, len(users)+1)
 	for _, user := range users {
 		lines = append(lines, compactUser(user))
 	}
-	lines = append(lines, fmt.Sprintf("%d users", len(users)))
+	summary := fmt.Sprintf("%d users", len(users))
+	if pageInfo.NextStartAt > 0 {
+		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
+	}
+	lines = append(lines, summary)
 	return writeCompact(stdout, stderr, lines...)
 }
 
@@ -1635,53 +1694,69 @@ func runAssignableUsers(ctx context.Context, opts Options, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "ERR usage assignable requires --project KEY or --issue KEY")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+	username := commandValue(opts, "--query")
+	buildQuery := func(start, size int) url.Values {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		if project != "" {
+			query.Set("project", project)
+		}
+		if issue != "" {
+			query.Set("issueKey", issue)
+		}
+		if username != "" {
+			query.Set("username", username)
+		}
+		return query
 	}
-	if project != "" {
-		query.Set("project", project)
+	if mode == output.Raw {
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "assignable", "search"}, buildQuery(opts.StartAt, minPositive(opts.PageSize, opts.Limit)), nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
+		return writeRaw(stdout, stderr, resp.Body)
 	}
-	if issue != "" {
-		query.Set("issueKey", issue)
-	}
-	if text := commandValue(opts, "--query"); text != "" {
-		query.Set("username", text)
-	}
-	var users []jira.User
-	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "assignable", "search"}, query, decodeOut(mode, &users))
+	users, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.User, int, bool, error) {
+		var users []jira.User
+		if _, err := client.Get(ctx, jira.PlatformAPI, []string{"user", "assignable", "search"}, buildQuery(start, size), &users); err != nil {
+			return nil, 0, false, err
+		}
+		return users, -1, false, nil
+	})
 	if err != nil {
 		return writeCommandError(stderr, err)
 	}
-	if mode == output.Raw {
-		return writeRaw(stdout, stderr, resp.Body)
-	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
-			OK      bool       `json:"ok"`
-			Kind    string     `json:"kind"`
-			Project string     `json:"project,omitempty"`
-			Issue   string     `json:"issue,omitempty"`
-			Users   []userView `json:"users"`
-		}{OK: true, Kind: "assignable", Project: project, Issue: issue, Users: toUserViews(users)})
+			OK          bool       `json:"ok"`
+			Kind        string     `json:"kind"`
+			Project     string     `json:"project,omitempty"`
+			Issue       string     `json:"issue,omitempty"`
+			Users       []userView `json:"users"`
+			NextStartAt int        `json:"nextStartAt,omitempty"`
+		}{OK: true, Kind: "assignable", Project: project, Issue: issue, Users: toUserViews(users), NextStartAt: pageInfo.NextStartAt})
 	}
 	lines := make([]string, 0, len(users)+1)
 	for _, user := range users {
 		lines = append(lines, compactUser(user))
 	}
-	lines = append(lines, fmt.Sprintf("%d assignable", len(users)))
+	summary := fmt.Sprintf("%d assignable", len(users))
+	if pageInfo.NextStartAt > 0 {
+		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
+	}
+	lines = append(lines, summary)
 	return writeCompact(stdout, stderr, lines...)
 }
 
 func runFilters(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var filters []jira.Filter
@@ -1708,9 +1783,8 @@ func runFilters(ctx context.Context, opts Options, stdout, stderr io.Writer, rt 
 }
 
 func runFilter(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var filter jira.Filter
@@ -1732,9 +1806,8 @@ func runFilter(ctx context.Context, opts Options, id string, stdout, stderr io.W
 }
 
 func runRemoteLinks(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var links []jira.RemoteIssueLink
@@ -1762,9 +1835,8 @@ func runRemoteLinks(ctx context.Context, opts Options, key string, stdout, stder
 }
 
 func runRemoteLink(ctx context.Context, opts Options, key, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var link jira.RemoteIssueLink
@@ -1798,9 +1870,8 @@ func runMyPermissions(ctx context.Context, opts Options, stdout, stderr io.Write
 }
 
 func runRawGet(ctx context.Context, opts Options, kind string, segments []string, query url.Values, stdout, stderr io.Writer, rt Runtime, mode output.Mode, compact func([]byte) string) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Get(ctx, jira.PlatformAPI, segments, query, nil)
@@ -1822,9 +1893,8 @@ func runRawGet(ctx context.Context, opts Options, kind string, segments []string
 }
 
 func runNamedList(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode, commandName, endpoint string) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var items []jira.NamedValue
@@ -1851,9 +1921,8 @@ func runNamedList(ctx context.Context, opts Options, stdout, stderr io.Writer, r
 }
 
 func runNamedGet(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode, commandName, endpoint string) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var item jira.NamedValue
@@ -1876,9 +1945,8 @@ func runNamedGet(ctx context.Context, opts Options, id string, stdout, stderr io
 }
 
 func runProjectNamedList(ctx context.Context, opts Options, project, commandName, endpoint string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var items []jira.NamedValue
@@ -1906,9 +1974,8 @@ func runProjectNamedList(ctx context.Context, opts Options, project, commandName
 }
 
 func runProjectVersions(ctx context.Context, opts Options, project string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var versions []jira.Version
@@ -1936,9 +2003,8 @@ func runProjectVersions(ctx context.Context, opts Options, project string, stdou
 }
 
 func runProjectRoles(ctx context.Context, opts Options, project string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var roles map[string]string
@@ -1976,29 +2042,43 @@ func runDashboards(ctx context.Context, opts Options, stdout, stderr io.Writer, 
 		fmt.Fprintln(stderr, "ERR usage --filter must be favourite or my")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-	}
-	if filter != "" {
-		query.Set("filter", filter)
-	}
-	var result jira.DashboardsResult
-	resp, err := client.Get(ctx, jira.PlatformAPI, []string{"dashboard"}, query, decodeOut(mode, &result))
-	if err != nil {
-		return writeCommandError(stderr, jira.AsCapabilityError(err))
-	}
 	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+		}
+		if filter != "" {
+			query.Set("filter", filter)
+		}
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"dashboard"}, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, jira.AsCapabilityError(err))
+		}
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	page := jira.Page{StartAt: result.StartAt, MaxResults: result.MaxResults, Total: result.Total}
-	if next, ok := jira.NextStartAt(result.StartAt, result.Total, len(result.Dashboards)); ok {
-		page.NextStartAt = next
+	var rawDashboards []json.RawMessage
+	dashboards, page, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.Dashboard, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		if filter != "" {
+			query.Set("filter", filter)
+		}
+		var result jira.DashboardsResult
+		resp, err := client.Get(ctx, jira.PlatformAPI, []string{"dashboard"}, query, &result)
+		if err != nil {
+			return nil, 0, false, jira.AsCapabilityError(err)
+		}
+		rawDashboards = append(rawDashboards, rawDashboardList(resp.Body)...)
+		return result.Dashboards, result.Total, false, nil
+	})
+	if err != nil {
+		return writeCommandError(stderr, err)
 	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
@@ -2008,13 +2088,13 @@ func runDashboards(ctx context.Context, opts Options, stdout, stderr io.Writer, 
 			Items         []dashboardView   `json:"items"`
 			RawDashboards []json.RawMessage `json:"rawDashboards,omitempty"`
 			Page          jira.Page         `json:"page"`
-		}{OK: true, Kind: "dashboards", Filter: filter, Items: toDashboardViews(result.Dashboards), RawDashboards: rawDashboardList(resp.Body), Page: page})
+		}{OK: true, Kind: "dashboards", Filter: filter, Items: toDashboardViews(dashboards), RawDashboards: rawDashboards, Page: page})
 	}
-	lines := make([]string, 0, len(result.Dashboards)+1)
-	for _, dashboard := range result.Dashboards {
+	lines := make([]string, 0, len(dashboards)+1)
+	for _, dashboard := range dashboards {
 		lines = append(lines, compactDashboard(dashboard))
 	}
-	summary := fmt.Sprintf("%d dashboards total=%d", len(result.Dashboards), result.Total)
+	summary := fmt.Sprintf("%d dashboards total=%d", len(dashboards), page.Total)
 	if page.NextStartAt > 0 {
 		summary += fmt.Sprintf(" next=\"--start-at %d\"", page.NextStartAt)
 	}
@@ -2023,9 +2103,8 @@ func runDashboards(ctx context.Context, opts Options, stdout, stderr io.Writer, 
 }
 
 func runDashboard(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var dashboard jira.Dashboard
@@ -2048,9 +2127,8 @@ func runDashboard(ctx context.Context, opts Options, id string, stdout, stderr i
 }
 
 func runDashboardItemPropertyKeys(ctx context.Context, opts Options, dashboardID, itemID string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var result jira.EntityPropertyKeys
@@ -2079,9 +2157,8 @@ func runDashboardItemPropertyKeys(ctx context.Context, opts Options, dashboardID
 }
 
 func runDashboardItemPropertyGet(ctx context.Context, opts Options, dashboardID, itemID, propertyKey string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var property jira.EntityProperty
@@ -2121,9 +2198,8 @@ func runDashboardItemPropertySet(ctx context.Context, opts Options, dashboardID,
 		fmt.Fprintln(stderr, "ERR usage dashboard item property set requires --dry-run or --yes")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodPut, jira.PlatformAPI, append(dashboardItemPropertySegments(dashboardID, itemID), propertyKey), nil, value, nil)
@@ -2145,9 +2221,8 @@ func runDashboardItemPropertyDelete(ctx context.Context, opts Options, dashboard
 		fmt.Fprintln(stderr, "ERR usage dashboard item property delete requires --dry-run or --yes")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodDelete, jira.PlatformAPI, append(dashboardItemPropertySegments(dashboardID, itemID), propertyKey), nil, nil, nil)
@@ -2161,9 +2236,8 @@ func runDashboardItemPropertyDelete(ctx context.Context, opts Options, dashboard
 }
 
 func runIssuePropertyKeys(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var result jira.EntityPropertyKeys
@@ -2191,9 +2265,8 @@ func runIssuePropertyKeys(ctx context.Context, opts Options, key string, stdout,
 }
 
 func runIssuePropertyGet(ctx context.Context, opts Options, key, propertyKey string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var property jira.EntityProperty
@@ -2232,9 +2305,8 @@ func runIssuePropertySet(ctx context.Context, opts Options, key, propertyKey str
 		fmt.Fprintln(stderr, "ERR usage issue property set requires --dry-run or --yes")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodPut, jira.PlatformAPI, []string{"issue", key, "properties", propertyKey}, nil, value, nil)
@@ -2256,9 +2328,8 @@ func runIssuePropertyDelete(ctx context.Context, opts Options, key, propertyKey 
 		fmt.Fprintln(stderr, "ERR usage issue property delete requires --dry-run or --yes")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodDelete, jira.PlatformAPI, []string{"issue", key, "properties", propertyKey}, nil, nil, nil)
@@ -2316,23 +2387,27 @@ func runCreate(ctx context.Context, opts Options, stdout, stderr io.Writer, rt R
 	if !requireWriteConfirmation(opts, stderr, "create") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
-	var result jira.WriteResult
-	resp, err := client.Do(ctx, http.MethodPost, jira.PlatformAPI, []string{"issue"}, nil, payload, decodeOut(mode, &result))
+	resp, err := client.Do(ctx, http.MethodPost, jira.PlatformAPI, []string{"issue"}, nil, payload, nil)
 	if err != nil {
 		return writeCommandErrorWithHint(stderr, err, fmt.Sprintf("run jira probe --project %s --issue-type %q to inspect createmeta", project, issueType))
 	}
-	if mode == output.Raw {
-		return writeRaw(stdout, stderr, resp.Body)
-	}
+	// Decode the issue key tolerantly so attachments upload in every output mode
+	// (including --raw, which must not skip the upload) and so a post-create
+	// failure can still report the created key instead of leaving the caller to
+	// retry into a duplicate issue.
+	var result jira.WriteResult
+	_ = json.Unmarshal(resp.Body, &result)
 	issueKey := firstNonEmpty(result.Key, result.ID)
 	uploaded, ok := uploadCreateAttachments(ctx, client, issueKey, attachFiles, stderr, mode)
 	if !ok {
-		return 1
+		return writeCreatePartialFailure(stdout, stderr, mode, issueKey, resp.Body)
+	}
+	if mode == output.Raw {
+		return writeRaw(stdout, stderr, resp.Body)
 	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
@@ -2350,9 +2425,8 @@ func runCreate(ctx context.Context, opts Options, stdout, stderr io.Writer, rt R
 }
 
 func runCreateMeta(ctx context.Context, opts Options, project, issueType string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	query := url.Values{
@@ -2377,8 +2451,12 @@ func runCreateMeta(ctx context.Context, opts Options, project, issueType string,
 			Metadata  map[string]any `json:"metadata"`
 		}{OK: true, Kind: "createmeta", Project: project, IssueType: issueType, Metadata: metadata})
 	}
-	lines := compactCreateMeta(resp.Body, project, issueType)
-	if createMetaIssueTypeCount(resp.Body) == 0 {
+	meta, ok := parseCreateMeta(resp.Body)
+	if !ok {
+		return writeCompact(stdout, stderr, fmt.Sprintf("OK createmeta project=%s issue-type=%s", project, issueType))
+	}
+	lines := compactCreateMeta(meta, project, issueType)
+	if createMetaIssueTypeCount(meta) == 0 {
 		query := url.Values{
 			"projectKeys": {project},
 			"expand":      {"projects.issuetypes"},
@@ -2446,9 +2524,8 @@ func runUpdate(ctx context.Context, opts Options, key string, stdout, stderr io.
 	if !requireWriteConfirmation(opts, stderr, "update") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodPut, jira.PlatformAPI, []string{"issue", key}, nil, map[string]any{"fields": fields}, nil)
@@ -2473,9 +2550,8 @@ func runComment(ctx context.Context, opts Options, key string, stdout, stderr io
 	if !requireWriteConfirmation(opts, stderr, "comment") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var result jira.WriteResult
@@ -2501,9 +2577,8 @@ func runAssign(ctx context.Context, opts Options, key string, stdout, stderr io.
 	if !requireWriteConfirmation(opts, stderr, "assign") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodPut, jira.PlatformAPI, []string{"issue", key, "assignee"}, nil, map[string]string{"name": assignee}, nil)
@@ -2517,9 +2592,8 @@ func runAssign(ctx context.Context, opts Options, key string, stdout, stderr io.
 }
 
 func runTransitions(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var result jira.TransitionsResult
@@ -2561,9 +2635,8 @@ func runTransition(ctx context.Context, opts Options, key string, stdout, stderr
 	if !requireWriteConfirmation(opts, stderr, "transition") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if id == "" {
@@ -2600,9 +2673,8 @@ func runDelete(ctx context.Context, opts Options, key string, stdout, stderr io.
 	if opts.DryRun {
 		return writeDryRun(stdout, stderr, mode, "delete", map[string]any{"issue": key})
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodDelete, jira.PlatformAPI, []string{"issue", key}, nil, nil, nil)
@@ -2616,9 +2688,8 @@ func runDelete(ctx context.Context, opts Options, key string, stdout, stderr io.
 }
 
 func runWatchers(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var watchers jira.Watchers
@@ -2654,9 +2725,8 @@ func runWatch(ctx context.Context, opts Options, key string, stdout, stderr io.W
 	if !requireWriteConfirmation(opts, stderr, kind) {
 		return 1
 	}
-	client, values, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, values, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	user := values.User
@@ -2691,9 +2761,8 @@ func runWorklogAdd(ctx context.Context, opts Options, key string, stdout, stderr
 	if !requireWriteConfirmation(opts, stderr, "worklog add") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	var result jira.WriteResult
@@ -2728,9 +2797,8 @@ func runLinkCreate(ctx context.Context, opts Options, source string, stdout, std
 	if !requireWriteConfirmation(opts, stderr, "link create") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodPost, jira.PlatformAPI, []string{"issueLink"}, nil, payload, nil)
@@ -2750,9 +2818,8 @@ func runLinkDelete(ctx context.Context, opts Options, id string, stdout, stderr 
 	if !requireWriteConfirmation(opts, stderr, "link delete") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	resp, err := client.Do(ctx, http.MethodDelete, jira.PlatformAPI, []string{"issueLink", id}, nil, nil, nil)
@@ -2788,9 +2855,8 @@ func runMoveSprint(ctx context.Context, opts Options, args []string, stdout, std
 	if !requireWriteConfirmation(opts, stderr, "move sprint") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
@@ -2819,9 +2885,8 @@ func runMoveBacklog(ctx context.Context, opts Options, args []string, stdout, st
 	if !requireWriteConfirmation(opts, stderr, "move backlog") {
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
@@ -2838,9 +2903,8 @@ func runMoveBacklog(ctx context.Context, opts Options, args []string, stdout, st
 }
 
 func runAgileBoard(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
@@ -2866,9 +2930,8 @@ func runAgileBoard(ctx context.Context, opts Options, id string, stdout, stderr 
 }
 
 func runSprint(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
@@ -2894,9 +2957,8 @@ func runSprint(ctx context.Context, opts Options, id string, stdout, stderr io.W
 }
 
 func runEpic(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
@@ -2930,34 +2992,43 @@ func runSprintSummary(ctx context.Context, opts Options, args []string, stdout, 
 		fmt.Fprintln(stderr, "ERR usage sprint summary requires --sprint ID")
 		return 1
 	}
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
 		return writeCommandError(stderr, err)
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-		"fields":     {"summary,status,priority,assignee,project,created,updated"},
+	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+			"fields":     {"summary,status,priority,assignee,project,created,updated"},
+		}
+		resp, err := client.Get(ctx, jira.AgileAPI, []string{"sprint", sprintID, "issue"}, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
+		return writeRaw(stdout, stderr, resp.Body)
 	}
-	var page jira.SearchResult
-	resp, err := client.Get(ctx, jira.AgileAPI, []string{"sprint", sprintID, "issue"}, query, decodeOut(mode, &page))
+	issues, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.Issue, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+			"fields":     {"summary,status,priority,assignee,project,created,updated"},
+		}
+		var page jira.SearchResult
+		if _, err := client.Get(ctx, jira.AgileAPI, []string{"sprint", sprintID, "issue"}, query, &page); err != nil {
+			return nil, 0, false, err
+		}
+		return page.Issues, page.Total, false, nil
+	})
 	if err != nil {
 		return writeCommandError(stderr, err)
 	}
-	if mode == output.Raw {
-		return writeRaw(stdout, stderr, resp.Body)
-	}
 	statuses := map[string]int{}
-	for _, issue := range page.Issues {
+	for _, issue := range issues {
 		statuses[firstNonEmpty(namedName(issue.Fields.Status), "-")]++
-	}
-	pageInfo := jira.Page{StartAt: page.StartAt, MaxResults: page.MaxResults, Total: page.Total}
-	if next, ok := jira.NextStartAt(page.StartAt, page.Total, len(page.Issues)); ok {
-		pageInfo.NextStartAt = next
 	}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, struct {
@@ -2968,7 +3039,7 @@ func runSprintSummary(ctx context.Context, opts Options, args []string, stdout, 
 			Page     jira.Page      `json:"page"`
 		}{OK: true, Kind: "sprint_summary", Sprint: sprintID, Statuses: statuses, Page: pageInfo})
 	}
-	line := fmt.Sprintf("sprint=%s issues=%d total=%d statuses=%s", sprintID, len(page.Issues), page.Total, compactCounts(statuses))
+	line := fmt.Sprintf("sprint=%s issues=%d total=%d statuses=%s", sprintID, len(issues), pageInfo.Total, compactCounts(statuses))
 	if pageInfo.NextStartAt > 0 {
 		line += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
 	}
@@ -2976,44 +3047,52 @@ func runSprintSummary(ctx context.Context, opts Options, args []string, stdout, 
 }
 
 func runAgileList[T any](ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode, kind string, segments []string, compact func(T) string, view func(T) any) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
 		return writeCommandError(stderr, err)
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-	}
-	var page jira.AgilePage[T]
-	resp, err := client.Get(ctx, jira.AgileAPI, segments, query, decodeOut(mode, &page))
-	if err != nil {
-		return writeCommandError(stderr, err)
-	}
 	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+		}
+		resp, err := client.Get(ctx, jira.AgileAPI, segments, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	pageInfo := jira.Page{StartAt: page.StartAt, MaxResults: page.MaxResults, Total: page.Total}
-	if next, ok := jira.NextStartAt(page.StartAt, page.Total, len(page.Values)); ok && !page.IsLast {
-		pageInfo.NextStartAt = next
+	values, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]T, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+		}
+		var page jira.AgilePage[T]
+		if _, err := client.Get(ctx, jira.AgileAPI, segments, query, &page); err != nil {
+			return nil, 0, false, err
+		}
+		return page.Values, page.Total, page.IsLast, nil
+	})
+	if err != nil {
+		return writeCommandError(stderr, err)
 	}
 	result := struct {
 		OK    bool      `json:"ok"`
 		Kind  string    `json:"kind"`
 		Items []any     `json:"items"`
 		Page  jira.Page `json:"page"`
-	}{OK: true, Kind: kind, Items: agileViews(page.Values, view), Page: pageInfo}
+	}{OK: true, Kind: kind, Items: agileViews(values, view), Page: pageInfo}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, result)
 	}
-	lines := make([]string, 0, len(page.Values)+1)
-	for _, item := range page.Values {
+	lines := make([]string, 0, len(values)+1)
+	for _, item := range values {
 		lines = append(lines, compact(item))
 	}
-	summary := fmt.Sprintf("%d %s total=%d", len(page.Values), kind, page.Total)
+	summary := fmt.Sprintf("%d %s total=%d", len(values), kind, pageInfo.Total)
 	if pageInfo.NextStartAt > 0 {
 		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
 	}
@@ -3022,45 +3101,54 @@ func runAgileList[T any](ctx context.Context, opts Options, stdout, stderr io.Wr
 }
 
 func runAgileIssues(ctx context.Context, opts Options, stdout, stderr io.Writer, rt Runtime, mode output.Mode, kind string, segments []string) int {
-	client, _, err := clientFromOptions(opts, rt)
-	if err != nil {
-		fmt.Fprintf(stderr, "ERR config %s\n", err)
+	client, _, ok := mustClient(opts, rt, stderr)
+	if !ok {
 		return 1
 	}
 	if err := ensureAgileAvailable(ctx, client); err != nil {
 		return writeCommandError(stderr, err)
 	}
-	query := url.Values{
-		"startAt":    {strconv.Itoa(opts.StartAt)},
-		"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
-		"fields":     {"summary,status,priority,assignee,project,created,updated"},
-	}
-	var page jira.SearchResult
-	resp, err := client.Get(ctx, jira.AgileAPI, segments, query, decodeOut(mode, &page))
-	if err != nil {
-		return writeCommandError(stderr, err)
-	}
 	if mode == output.Raw {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(opts.StartAt)},
+			"maxResults": {strconv.Itoa(minPositive(opts.PageSize, opts.Limit))},
+			"fields":     {"summary,status,priority,assignee,project,created,updated"},
+		}
+		resp, err := client.Get(ctx, jira.AgileAPI, segments, query, nil)
+		if err != nil {
+			return writeCommandError(stderr, err)
+		}
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	pageInfo := jira.Page{StartAt: page.StartAt, MaxResults: page.MaxResults, Total: page.Total}
-	if next, ok := jira.NextStartAt(page.StartAt, page.Total, len(page.Issues)); ok {
-		pageInfo.NextStartAt = next
+	issues, pageInfo, err := collectPaged(opts.StartAt, opts.PageSize, opts.Limit, func(start, size int) ([]jira.Issue, int, bool, error) {
+		query := url.Values{
+			"startAt":    {strconv.Itoa(start)},
+			"maxResults": {strconv.Itoa(size)},
+			"fields":     {"summary,status,priority,assignee,project,created,updated"},
+		}
+		var page jira.SearchResult
+		if _, err := client.Get(ctx, jira.AgileAPI, segments, query, &page); err != nil {
+			return nil, 0, false, err
+		}
+		return page.Issues, page.Total, false, nil
+	})
+	if err != nil {
+		return writeCommandError(stderr, err)
 	}
 	result := struct {
 		OK    bool        `json:"ok"`
 		Kind  string      `json:"kind"`
 		Items []issueView `json:"items"`
 		Page  jira.Page   `json:"page"`
-	}{OK: true, Kind: kind, Items: toIssueViews(page.Issues), Page: pageInfo}
+	}{OK: true, Kind: kind, Items: toIssueViews(issues), Page: pageInfo}
 	if mode == output.JSON {
 		return writeJSON(stdout, stderr, result)
 	}
-	lines := make([]string, 0, len(page.Issues)+1)
-	for _, issue := range page.Issues {
+	lines := make([]string, 0, len(issues)+1)
+	for _, issue := range issues {
 		lines = append(lines, compactIssue(issue))
 	}
-	summary := fmt.Sprintf("%d issues total=%d", len(page.Issues), page.Total)
+	summary := fmt.Sprintf("%d issues total=%d", len(issues), pageInfo.Total)
 	if pageInfo.NextStartAt > 0 {
 		summary += fmt.Sprintf(" next=\"--start-at %d\"", pageInfo.NextStartAt)
 	}
@@ -3111,6 +3199,55 @@ func collectSearch(ctx context.Context, client jira.Client, jql string, startAt,
 	return items, page, nil
 }
 
+// collectPaged accumulates offset-based list pages until `limit` items are
+// gathered or the server signals the end, so --limit means "max items across
+// pages" for every list endpoint (mirroring collectSearch for search). The
+// fetch closure performs one request and returns the page items, the reported
+// total (or a negative value when the endpoint returns a bare array with no
+// total), and whether the API already flagged this as the last page.
+func collectPaged[T any](startAt, pageSize, limit int, fetch func(start, size int) ([]T, int, bool, error)) ([]T, jira.Page, error) {
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if limit <= 0 {
+		limit = pageSize
+	}
+	collected := make([]T, 0, minPositive(pageSize, limit))
+	start := startAt
+	total := -1
+	nextStart := 0
+	hasNext := false
+	for len(collected) < limit {
+		size := minPositive(pageSize, limit-len(collected))
+		items, pageTotal, isLast, err := fetch(start, size)
+		if err != nil {
+			return nil, jira.Page{}, err
+		}
+		total = pageTotal
+		collected = append(collected, items...)
+		advanced := start + len(items)
+		atEnd := isLast || len(items) == 0
+		if total >= 0 {
+			atEnd = atEnd || advanced >= total
+		} else {
+			// No total reported (bare array): a short page marks the end.
+			atEnd = atEnd || len(items) < size
+		}
+		if atEnd {
+			hasNext = false
+			break
+		}
+		start = advanced
+		nextStart = advanced
+		hasNext = true
+	}
+	page := jira.Page{StartAt: startAt, MaxResults: pageSize, Total: total}
+	if hasNext && (total < 0 || nextStart < total) {
+		page.NextStartAt = nextStart
+	}
+	return collected, page, nil
+}
+
 func issueLinksQuery() url.Values {
 	return url.Values{"fields": {"issuelinks,summary,status,priority,assignee"}}
 }
@@ -3159,9 +3296,22 @@ func clientFromOptions(opts Options, rt Runtime) (jira.Client, config.Values, er
 		BaseURL:    values.BaseURL,
 		User:       values.User,
 		Secret:     resolvedSecret(values, rt.Env),
+		Bearer:     strings.EqualFold(values.AuthScheme, "bearer"),
 		HTTPClient: rt.HTTPClient,
 		Timeout:    opts.Timeout,
 	}, values, nil
+}
+
+// mustClient resolves the Jira client from options, printing the standard config
+// error and returning ok=false on failure so callers can `return 1` without
+// repeating the resolve-and-print boilerplate at every command.
+func mustClient(opts Options, rt Runtime, stderr io.Writer) (jira.Client, config.Values, bool) {
+	client, values, err := clientFromOptions(opts, rt)
+	if err != nil {
+		fmt.Fprintf(stderr, "ERR config %s\n", err)
+		return jira.Client{}, values, false
+	}
+	return client, values, true
 }
 
 func resolveConfig(opts Options, rt Runtime, requireProfile bool) (config.Values, []string, error) {
@@ -3172,11 +3322,12 @@ func resolveConfig(opts Options, rt Runtime, requireProfile bool) (config.Values
 		return config.Values{}, nil, rt.ProfileLoadError
 	}
 	values := config.Resolve(config.Values{
-		Profile:  opts.Profile,
-		Type:     opts.Type,
-		BaseURL:  opts.BaseURL,
-		User:     opts.User,
-		TokenEnv: opts.TokenEnv,
+		Profile:    opts.Profile,
+		Type:       opts.Type,
+		BaseURL:    opts.BaseURL,
+		User:       opts.User,
+		TokenEnv:   opts.TokenEnv,
+		AuthScheme: opts.AuthScheme,
 	}, rt.Env, rt.Profiles)
 	missing := config.Validate(values, rt.Env)
 	sort.Strings(missing)
@@ -3230,7 +3381,8 @@ func writeProbe(stdout, stderr io.Writer, mode output.Mode, result probe.Result)
 }
 
 func writeCommandError(stderr io.Writer, err error) int {
-	if jiraErr, ok := err.(*jira.Error); ok {
+	var jiraErr *jira.Error
+	if errors.As(err, &jiraErr) {
 		fmt.Fprintf(stderr, "ERR jira %s\n", jiraErr.Error())
 		return jiraErr.ExitCode()
 	}
@@ -3310,6 +3462,28 @@ func requireWriteConfirmation(opts Options, stderr io.Writer, command string) bo
 	}
 	fmt.Fprintf(stderr, "ERR usage %s requires --dry-run or --yes\n", command)
 	return false
+}
+
+// writeCreatePartialFailure reports a create that succeeded server-side but whose
+// attachment upload failed. uploadCreateAttachments already wrote the failure
+// detail to stderr; here we surface the created issue key on stdout so callers
+// capture it instead of retrying and creating a duplicate, and return exit code 6
+// (partial success, matching bulk search).
+func writeCreatePartialFailure(stdout, stderr io.Writer, mode output.Mode, issueKey string, body []byte) int {
+	switch mode {
+	case output.JSON:
+		writeJSON(stdout, stderr, struct {
+			OK    bool   `json:"ok"`
+			Kind  string `json:"kind"`
+			Issue string `json:"issue"`
+			Error string `json:"error"`
+		}{OK: false, Kind: "create", Issue: issueKey, Error: "issue created but attachment upload failed"})
+	case output.Raw:
+		writeRaw(stdout, stderr, body)
+	default:
+		writeCompact(stdout, stderr, fmt.Sprintf("create issue=%s attachments=failed", emptyDash(issueKey)))
+	}
+	return 6
 }
 
 func toIssueView(issue jira.Issue) issueView {
@@ -4120,12 +4294,8 @@ func compactPlanValue(value any) string {
 	}
 }
 
-func compactCreateMeta(body []byte, project, issueType string) []string {
+func compactCreateMeta(meta createMetaSummary, project, issueType string) []string {
 	lines := []string{fmt.Sprintf("OK createmeta project=%s issue-type=%s", project, issueType)}
-	meta, ok := parseCreateMeta(body)
-	if !ok {
-		return lines
-	}
 	var selected *createMetaIssueType
 	for i := range meta.Projects {
 		for j := range meta.Projects[i].IssueTypes {
@@ -4162,11 +4332,7 @@ func compactCreateMeta(body []byte, project, issueType string) []string {
 	return lines
 }
 
-func createMetaIssueTypeCount(body []byte) int {
-	meta, ok := parseCreateMeta(body)
-	if !ok {
-		return -1
-	}
+func createMetaIssueTypeCount(meta createMetaSummary) int {
 	count := 0
 	for _, project := range meta.Projects {
 		count += len(project.IssueTypes)
@@ -4479,14 +4645,9 @@ func clean(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
+// firstNonEmpty aliases config.FirstNonEmpty so the helper has one
+// implementation while call sites stay unchanged.
+var firstNonEmpty = config.FirstNonEmpty
 
 func minPositive(a, b int) int {
 	if a <= 0 {

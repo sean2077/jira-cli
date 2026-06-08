@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,13 +19,54 @@ type Client struct {
 	BaseURL    string
 	User       string
 	Secret     string
+	Bearer     bool
 	HTTPClient *http.Client
 	Timeout    time.Duration
+}
+
+// authHeader returns the Authorization header value for the configured
+// credentials: a bearer token for Jira 8.14+ Personal Access Tokens when Bearer
+// is set, otherwise HTTP Basic. It returns "" when no credentials are present.
+func (c Client) authHeader() (string, error) {
+	if c.User == "" && c.Secret == "" {
+		return "", nil
+	}
+	if c.Bearer {
+		return BearerAuthHeader(c.Secret)
+	}
+	return BasicAuthHeader(c.User, c.Secret)
 }
 
 type Response struct {
 	StatusCode int
 	Body       []byte
+}
+
+// httpClient returns a shallow copy of the configured HTTP client with a
+// redirect policy that refuses to follow redirects off the original Jira host.
+// Copying avoids mutating the caller-supplied (or default) client while still
+// closing the SSRF hole where a server-controlled redirect (e.g. an attachment
+// content URL validated only on its first hop) could steer an authenticated
+// request to an internal/metadata endpoint.
+func (c Client) httpClient() *http.Client {
+	base := c.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	clone := *base
+	clone.CheckRedirect = limitRedirectsToOriginHost
+	return &clone
+}
+
+func limitRedirectsToOriginHost(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	origin := via[0].URL
+	if !strings.EqualFold(req.URL.Scheme, origin.Scheme) || !strings.EqualFold(req.URL.Host, origin.Host) {
+		return fmt.Errorf("refusing redirect off the Jira host to %s", req.URL.Redacted())
+	}
+	return nil
 }
 
 func (c Client) Get(ctx context.Context, api API, segments []string, query url.Values, out any) (Response, error) {
@@ -66,19 +109,15 @@ func (c Client) Do(ctx context.Context, method string, api API, segments []strin
 	if requestBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.User != "" || c.Secret != "" {
-		auth, err := BasicAuthHeader(c.User, c.Secret)
-		if err != nil {
-			return Response{}, err
-		}
+	auth, err := c.authHeader()
+	if err != nil {
+		return Response{}, err
+	}
+	if auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
 
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return Response{}, &Error{Kind: ErrorNetwork, Err: err}
 	}
@@ -106,12 +145,9 @@ func (c Client) PostMultipartFile(ctx context.Context, api API, segments []strin
 		return Response{}, err
 	}
 
-	auth := ""
-	if c.User != "" || c.Secret != "" {
-		auth, err = BasicAuthHeader(c.User, c.Secret)
-		if err != nil {
-			return Response{}, err
-		}
+	auth, err := c.authHeader()
+	if err != nil {
+		return Response{}, err
 	}
 
 	timeout := c.Timeout
@@ -155,16 +191,14 @@ func (c Client) PostMultipartFile(ctx context.Context, api API, segments []strin
 		writeErr <- bodyWriter.Close()
 	}()
 
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		_ = bodyReader.Close()
-		if pipeErr := waitMultipartWrite(reqCtx, writeErr); pipeErr != nil {
-			return Response{}, pipeErr
-		}
+		// Drain the writer goroutine so it cannot leak, but surface the real
+		// transport error: the pipe error is only a consequence of cancelling
+		// the upload, and returning it would mask the cause and lose the
+		// ErrorNetwork classification (exit code 4).
+		_ = waitMultipartWrite(reqCtx, writeErr)
 		return Response{}, &Error{Kind: ErrorNetwork, Err: err}
 	}
 	defer resp.Body.Close()
@@ -215,19 +249,15 @@ func (c Client) DownloadURL(ctx context.Context, rawURL string, out io.Writer) (
 		return Response{}, 0, err
 	}
 	req.Header.Set("Accept", "*/*")
-	if c.User != "" || c.Secret != "" {
-		auth, err := BasicAuthHeader(c.User, c.Secret)
-		if err != nil {
-			return Response{}, 0, err
-		}
+	auth, err := c.authHeader()
+	if err != nil {
+		return Response{}, 0, err
+	}
+	if auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
 
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return Response{}, 0, &Error{Kind: ErrorNetwork, Err: err}
 	}
@@ -286,17 +316,19 @@ type Issue struct {
 }
 
 type IssueFields struct {
-	Summary     string       `json:"summary,omitempty"`
-	Status      *NamedValue  `json:"status,omitempty"`
-	Priority    *NamedValue  `json:"priority,omitempty"`
-	Assignee    *User        `json:"assignee,omitempty"`
-	Project     *Project     `json:"project,omitempty"`
-	IssueType   *NamedValue  `json:"issuetype,omitempty"`
-	Created     string       `json:"created,omitempty"`
-	Updated     string       `json:"updated,omitempty"`
-	Description string       `json:"description,omitempty"`
-	IssueLinks  []IssueLink  `json:"issuelinks,omitempty"`
-	Attachments []Attachment `json:"attachment,omitempty"`
+	Summary     string          `json:"summary,omitempty"`
+	Status      *NamedValue     `json:"status,omitempty"`
+	Priority    *NamedValue     `json:"priority,omitempty"`
+	Assignee    *User           `json:"assignee,omitempty"`
+	Project     *Project        `json:"project,omitempty"`
+	IssueType   *NamedValue     `json:"issuetype,omitempty"`
+	Created     string          `json:"created,omitempty"`
+	Updated     string          `json:"updated,omitempty"`
+	Description string          `json:"description,omitempty"`
+	IssueLinks  []IssueLink     `json:"issuelinks,omitempty"`
+	Attachments []Attachment    `json:"attachment,omitempty"`
+	Comment     *CommentsResult `json:"comment,omitempty"`
+	Worklog     *WorklogsResult `json:"worklog,omitempty"`
 }
 
 type IssueLinkType struct {

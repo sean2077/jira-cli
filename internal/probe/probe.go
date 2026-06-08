@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 
+	"github.com/sean2077/jira-cli/internal/config"
 	"github.com/sean2077/jira-cli/internal/jira"
 )
 
@@ -88,6 +89,10 @@ func Run(ctx context.Context, client jira.Client, opts Options) (Result, error) 
 	if endpoint(ctx, client, jira.AgileAPI, []string{"board"}, url.Values{"maxResults": {"1"}}) {
 		result.Agile = "available"
 	}
+	// OK reflects whether every probed platform capability is available, so a
+	// consumer checking .ok detects a degraded server instead of always seeing
+	// true. Agile is optional and reported separately, so it does not flip OK.
+	result.OK = len(result.Warnings) == 0
 	return result, nil
 }
 
@@ -96,11 +101,5 @@ func endpoint(ctx context.Context, client jira.Client, api jira.API, segments []
 	return err == nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
+// firstNonEmpty aliases config.FirstNonEmpty for a single shared implementation.
+var firstNonEmpty = config.FirstNonEmpty
