@@ -45,7 +45,7 @@ curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/inst
 Pin a release only when needed:
 
 ```bash
-curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/install.sh | sh -s -- v1.0.0
+curl -fsSL https://github.com/sean2077/jira-cli/raw/refs/heads/main/scripts/install.sh | sh -s -- v1.1.0
 ```
 
 Windows PowerShell:

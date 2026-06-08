@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Version = "1.0.0-dev"
+var Version = "1.1.0-dev"
 
 type Options = commands.Options
 type Runtime = commands.Runtime
