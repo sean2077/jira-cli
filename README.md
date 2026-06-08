@@ -180,5 +180,12 @@ scripts/build-release.sh v0.0.0-test
 ```
 
 Live Jira checks are opt-in with `JIRA_LIVE_TEST=1` and the environment
-variables from `.env.example`. Release binaries are uploaded by the GitHub
-Release workflow after a release is published.
+variables from `.env.example`. Release binaries are built when a `v*` tag is
+pushed; the release workflow creates or updates the GitHub Release and uploads
+the generated assets.
+
+```bash
+git tag -a v1.1.0 -m v1.1.0
+git push origin main
+git push origin v1.1.0
+```
