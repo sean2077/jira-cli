@@ -23,6 +23,11 @@ Use `--json` only when exact parsing is needed across follow-up steps:
 jira probe --json
 ```
 
+Use `jira --help`, `jira help <command>`, or `jira <command> --help` when a
+command shape or flag is unclear. The CLI uses Cobra help and suggestions where
+the command scope can be resolved; other usage errors point to the nearest
+command help surface.
+
 ## Install
 
 If the `jira-cli` skill is missing from the current project, install the bundled

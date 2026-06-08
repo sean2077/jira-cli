@@ -81,6 +81,11 @@ when configuration is unclear.
 The examples use `T1` as a placeholder test project key. Replace it with a
 project key from your Jira instance.
 
+The command layer is Cobra-backed. Use `jira --help`, `jira help <command>`, or
+`jira <command> --help` for generated command-specific help, flag lists, and
+near-match suggestions where Cobra can resolve a mistyped command. Validation
+errors point to the nearest command help surface.
+
 ```bash
 jira search 'project = T1 ORDER BY updated DESC' --limit 10
 jira issue T1-123

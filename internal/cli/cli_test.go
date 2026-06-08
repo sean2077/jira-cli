@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/spf13/cobra"
 )
 
-func TestHelpIsConciseAndExampleDriven(t *testing.T) {
+func TestCobraHelpSurfaces(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Main([]string{"--help"}, &stdout, &stderr)
 	if code != 0 {
@@ -22,45 +23,70 @@ func TestHelpIsConciseAndExampleDriven(t *testing.T) {
 	}
 	out := stdout.String()
 	for _, want := range []string{
-		"jira - agent-first Jira Server CLI",
-		"Read-only:",
-		"Agent views:",
-		"Dashboards:",
-		"Agile:",
-		"Writes:",
-		"Examples:",
-		"Safety:",
-		"jira probe | whoami",
-		"jira search '<JQL>' [flags] | bulk search '<JQL>' ['<JQL>'...]",
-		"jira issue <KEY> | comments <KEY> | worklogs <KEY> | attachments <KEY> | links <KEY> | remote-links <KEY>",
-		"jira attachment <ID> | attachment download <ID> --file PATH",
-		"jira create --project KEY --issue-type NAME --meta",
-		"jira mine --days 3",
-		"jira dashboards [--filter favourite|my] | dashboard <ID>",
-		"jira dashboard item property set <DASHBOARD_ID> <ITEM_ID> <KEY> --body JSON [--dry-run|--yes]",
-		"jira watch <KEY> | unwatch <KEY> [--dry-run|--yes]",
-		"jira create --project T1 --issue-type Bug --summary 'Fix login' --dry-run",
-		"jira skill install [--global|--target DIR]",
-		"Run jira probe before assuming core API, dashboard, Agile, fields, or create/edit metadata support.",
+		"agent-first Jira Server CLI",
+		"Usage:",
+		"Command Groups:",
+		"create",
+		"dashboard",
+		"move",
+		"skill",
+		"Flags:",
 		"--json",
+		`Use "jira help <command>" or "jira <command> --help" for command-specific help.`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing %q in:\n%s", want, out)
 		}
 	}
-	for _, want := range []string{
-		"jira issue <KEY> | comments <KEY> | worklogs <KEY> | attachments <KEY> | links <KEY> | remote-links <KEY>",
-		"jira attachment add <KEY> --file PATH [--dry-run|--yes]",
-		"jira filters | filter <ID> | users search --query TEXT | assignable --project KEY",
-		"jira api get <PATH> [--query k=v] [--raw]",
-		"jira api post|put|delete <PATH> [--body JSON] [--dry-run|--yes] [--force for Agile writes]",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("help missing new API surface %q in:\n%s", want, out)
-		}
+
+	tests := []struct {
+		name   string
+		args   []string
+		want   []string
+		forbid []string
+	}{
+		{
+			name: "create help",
+			args: []string{"create", "--help"},
+			want: []string{"Usage:", "jira create", "--project", "--issue-type", "--summary", "--field", "--dry-run"},
+		},
+		{
+			name: "api post help",
+			args: []string{"help", "api", "post"},
+			want: []string{"Usage:", "jira api post PATH", "--body", "--query", "--force"},
+		},
+		{
+			name:   "api get help",
+			args:   []string{"help", "api", "get"},
+			want:   []string{"Usage:", "jira api get PATH", "--query", "--force"},
+			forbid: []string{"--body"},
+		},
+		{
+			name: "dashboard property help",
+			args: []string{"dashboard", "item", "property", "set", "--help"},
+			want: []string{"Usage:", "jira dashboard item property set DASHBOARD_ID ITEM_ID KEY", "--body", "--yes"},
+		},
 	}
-	if strings.Count(out, "\n") >= 80 {
-		t.Fatalf("help is too long:\n%s", out)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+			code := Main(tt.args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+			}
+			out := stdout.String()
+			for _, want := range tt.want {
+				if !strings.Contains(out, want) {
+					t.Fatalf("help missing %q in:\n%s", want, out)
+				}
+			}
+			for _, forbid := range tt.forbid {
+				if strings.Contains(out, forbid) {
+					t.Fatalf("help contained forbidden %q in:\n%s", forbid, out)
+				}
+			}
+		})
 	}
 }
 
@@ -184,8 +210,11 @@ func TestVersionCompactAndJSON(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "compact", args: []string{"version"}, want: "jira " + Version + "\n"},
+		{name: "compact default", args: []string{"version"}, want: "jira " + Version + "\n"},
 		{name: "json", args: []string{"--json", "version"}, want: `{"ok":true,"kind":"version","version":"` + Version + `"}` + "\n"},
+		{name: "json then compact", args: []string{"--json", "--compact", "version"}, want: "jira " + Version + "\n"},
+		{name: "compact then json", args: []string{"--compact", "--json", "version"}, want: `{"ok":true,"kind":"version","version":"` + Version + `"}` + "\n"},
+		{name: "raw then compact", args: []string{"--raw", "--compact", "version"}, want: "jira " + Version + "\n"},
 	}
 
 	for _, tt := range tests {
@@ -202,10 +231,67 @@ func TestVersionCompactAndJSON(t *testing.T) {
 	}
 }
 
-func TestParseGlobalFlags(t *testing.T) {
-	opts, positionals, err := ParseArgs([]string{
+func TestCobraActionMapMatchesRunnableLeaves(t *testing.T) {
+	opts := DefaultOptions()
+	var stdout, stderr bytes.Buffer
+	exitCode := 0
+	root := newRootCommand(&opts, &stdout, &stderr, Runtime{}, &exitCode)
+
+	actions := commandActions()
+	runnable := map[string]bool{}
+	var walk func(*cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		if cmd == nil || cmd.Hidden || cmd.Name() == "help" {
+			return
+		}
+		if cmd.Runnable() && cmd.Annotations["jira-cli-parent"] != "true" {
+			path := cmd.CommandPath()
+			if path != "jira" && path != "jira version" {
+				key := strings.TrimPrefix(path, "jira ")
+				runnable[key] = true
+				if _, ok := actions[key]; !ok {
+					t.Errorf("missing action for Cobra command %q", key)
+				}
+			}
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
+
+	for key := range actions {
+		if !runnable[key] {
+			t.Errorf("action %q has no runnable Cobra command", key)
+		}
+	}
+}
+
+func TestCobraGlobalFlagsReachCommands(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/search", func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Query().Get("jql"), "project = JCLI"; got != want {
+			t.Fatalf("jql = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("maxResults"), "10"; got != want {
+			t.Fatalf("maxResults = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("startAt"), "5"; got != want {
+			t.Fatalf("startAt = %q, want %q", got, want)
+		}
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "agent" || pass != "secret-token" {
+			t.Fatalf("basic auth = %q/%q ok=%t", user, pass, ok)
+		}
+		writeJSONBody(`{"startAt":5,"maxResults":10,"total":0,"issues":[]}`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{
 		"--profile", "private",
-		"--base-url=https://jira.example.com",
+		"--base-url=" + server.URL,
 		"--type", "server",
 		"--user", "agent",
 		"--token-env", "JIRA_PRIVATE_TOKEN",
@@ -214,40 +300,42 @@ func TestParseGlobalFlags(t *testing.T) {
 		"--page-size=10",
 		"--start-at", "5",
 		"--timeout", "5s",
-		"--dry-run",
-		"--yes",
 		"search",
 		"project = JCLI",
-	})
-	if err != nil {
-		t.Fatalf("ParseArgs returned error: %v", err)
+	}, &stdout, &stderr, Runtime{Env: map[string]string{"JIRA_PRIVATE_TOKEN": "secret-token"}})
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
-	if got, want := positionals, []string{"search", "project = JCLI"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("positionals = %#v, want %#v", got, want)
-	}
-	if opts.Profile != "private" || opts.BaseURL != "https://jira.example.com" || opts.Type != "server" || opts.User != "agent" || opts.TokenEnv != "JIRA_PRIVATE_TOKEN" {
-		t.Fatalf("options did not parse string flags: %#v", opts)
-	}
-	if !opts.JSON || opts.Raw || opts.Compact {
-		t.Fatalf("output mode flags parsed incorrectly: %#v", opts)
-	}
-	if opts.Limit != 25 || opts.PageSize != 10 || opts.StartAt != 5 || opts.Timeout != 5*time.Second || !opts.DryRun || !opts.Yes {
-		t.Fatalf("options did not parse numeric/bool flags: %#v", opts)
+	if !strings.Contains(stdout.String(), `"kind":"issue_search"`) {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
 
-func TestParseArgErrors(t *testing.T) {
-	tests := [][]string{
-		{"--base-url"},
-		{"--limit", "0"},
-		{"--start-at", "-1"},
-		{"--timeout", "nope"},
-		{"--unknown"},
+func TestCobraUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing flag value", args: []string{"--base-url"}, want: "flag needs an argument"},
+		{name: "invalid limit", args: []string{"search", "--limit", "0", "project = JCLI"}, want: "--limit must be a positive integer"},
+		{name: "invalid start", args: []string{"search", "--start-at", "-1", "project = JCLI"}, want: "--start-at must be a non-negative integer"},
+		{name: "invalid timeout", args: []string{"search", "--timeout", "nope", "project = JCLI"}, want: "invalid argument"},
+		{name: "unknown flag", args: []string{"search", "--unknown", "project = JCLI"}, want: "unknown flag"},
+		{name: "command-specific flag", args: []string{"issue", "JCLI-1", "--summary", "nope"}, want: "unknown flag"},
+		{name: "api get body flag", args: []string{"api", "get", "filter/favourite", "--body", "{}"}, want: "unknown flag"},
+		{name: "missing arg", args: []string{"issue"}, want: "accepts 1 arg"},
+		{name: "unknown command suggestion", args: []string{"craete"}, want: "create"},
+		{name: "nested typo nearest help", args: []string{"issue", "proeprty", "JCLI-1"}, want: `HINT use "jira issue --help"`},
 	}
-	for _, args := range tests {
-		if _, _, err := ParseArgs(args); err == nil {
-			t.Fatalf("ParseArgs(%#v) returned nil error", args)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := MainWithRuntime(tt.args, &stdout, &stderr, Runtime{})
+			if code != 1 || !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("code = %d stdout=%q stderr=%q, want %q", code, stdout.String(), stderr.String(), tt.want)
+			}
+		})
 	}
 }
 
@@ -733,8 +821,8 @@ func TestAPIPassThroughRejectsExtraArgsAndEmptyBodyBeforeHTTP(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "get extra arg", args: []string{"api", "get", "filter", "extra"}, want: "expected api get|post|put|delete <PATH>"},
-		{name: "write extra arg", args: []string{"api", "delete", "filter/10000", "extra", "--yes"}, want: "expected api get|post|put|delete <PATH>"},
+		{name: "get extra arg", args: []string{"api", "get", "filter", "extra"}, want: "accepts 1 arg"},
+		{name: "write extra arg", args: []string{"api", "delete", "filter/10000", "extra", "--yes"}, want: "accepts 1 arg"},
 		{name: "empty body", args: []string{"api", "post", "filter", "--body=", "--yes"}, want: "--body must be valid JSON"},
 	}
 	for _, tt := range tests {

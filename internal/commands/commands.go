@@ -30,17 +30,46 @@ type Options struct {
 	User     string
 	TokenEnv string
 
-	JSON     bool
-	Raw      bool
-	DryRun   bool
-	Yes      bool
+	JSON    bool
+	Raw     bool
+	DryRun  bool
+	Yes     bool
+	Compact bool
+
 	PageSize int
 	Limit    int
 	StartAt  int
 	Timeout  time.Duration
 
-	CommandValues map[string][]string
-	CommandBools  map[string]bool
+	Project     string
+	IssueType   string
+	Issues      []string
+	Summary     string
+	Body        string
+	BodySet     bool
+	Fields      []string
+	Components  []string
+	Versions    []string
+	Due         string
+	Priority    string
+	Attachments []string
+	Assignee    string
+	ID          string
+	Name        string
+	Comment     string
+	Time        string
+	Target      string
+	LinkType    string
+	Queries     []string
+	Days        string
+	Status      string
+	Sprint      string
+	Filter      string
+	File        string
+
+	Force  bool
+	Global bool
+	Meta   bool
 }
 
 type Runtime struct {
@@ -48,6 +77,336 @@ type Runtime struct {
 	Profiles         config.ProfileFile
 	ProfileLoadError error
 	HTTPClient       *http.Client
+}
+
+type Action func(context.Context, Options, []string, io.Writer, io.Writer, Runtime, output.Mode) int
+
+func RunConfigDoctor(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runConfig(opts, []string{"doctor"}, stdout, stderr, rt)
+}
+
+func RunSkillInstall(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runSkill(opts, []string{"install"}, stdout, stderr, rt, mode)
+}
+
+func RunProbe(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProbe(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunWhoami(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWhoami(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunAPIGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAPIPassThrough(ctx, opts, []string{"get", args[0]}, stdout, stderr, rt, mode)
+}
+
+func RunAPIPost(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAPIPassThrough(ctx, opts, []string{"post", args[0]}, stdout, stderr, rt, mode)
+}
+
+func RunAPIPut(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAPIPassThrough(ctx, opts, []string{"put", args[0]}, stdout, stderr, rt, mode)
+}
+
+func RunAPIDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAPIPassThrough(ctx, opts, []string{"delete", args[0]}, stdout, stderr, rt, mode)
+}
+
+func RunSearch(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runSearch(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunIssue(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runIssue(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunIssuePropertyKeys(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runIssuePropertyKeys(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunIssuePropertyGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runIssuePropertyGet(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunIssuePropertySet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runIssuePropertySet(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunIssuePropertyDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runIssuePropertyDelete(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunComments(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runComments(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunCommentAdd(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runComment(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunCommentGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runCommentGet(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunWorklogs(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWorklogs(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunWorklogAdd(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWorklogAdd(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunWorklogGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWorklogGet(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunAttachments(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAttachments(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunAttachmentGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAttachmentGet(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunAttachmentAdd(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAttachmentAdd(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunAttachmentDownload(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAttachmentDownload(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunAttachmentDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAttachmentDelete(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunLinks(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runLinks(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunLinkCreate(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runLinkCreate(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunLinkDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runLinkDelete(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunRemoteLinks(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runRemoteLinks(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunRemoteLink(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runRemoteLink(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunProjects(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProjects(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunProject(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProject(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunComponents(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProjectNamedList(ctx, opts, args[0], "components", "components", stdout, stderr, rt, mode)
+}
+
+func RunVersions(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProjectVersions(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunRoles(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runProjectRoles(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunRole(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runRawGet(ctx, opts, "role", []string{"project", args[0], "role", args[1]}, nil, stdout, stderr, rt, mode, compactJSONBodyLine)
+}
+
+func RunProjectStatuses(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runRawGet(ctx, opts, "project_statuses", []string{"project", args[0], "statuses"}, nil, stdout, stderr, rt, mode, compactJSONArrayCount("project-statuses"))
+}
+
+func RunFields(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runFields(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunUsersSearch(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runUsersSearch(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunAssignableUsers(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAssignableUsers(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunIssueTypes(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedList(ctx, opts, stdout, stderr, rt, mode, "issuetypes", "issuetype")
+}
+
+func RunPriorities(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedList(ctx, opts, stdout, stderr, rt, mode, "priorities", "priority")
+}
+
+func RunStatuses(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedList(ctx, opts, stdout, stderr, rt, mode, "statuses", "status")
+}
+
+func RunResolutions(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedList(ctx, opts, stdout, stderr, rt, mode, "resolutions", "resolution")
+}
+
+func RunResolution(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedGet(ctx, opts, args[0], stdout, stderr, rt, mode, "resolution", "resolution")
+}
+
+func RunWorkflows(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runNamedList(ctx, opts, stdout, stderr, rt, mode, "workflows", "workflow")
+}
+
+func RunFilters(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runFilters(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunFilter(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runFilter(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunPermissions(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runRawGet(ctx, opts, "permissions", []string{"permissions"}, nil, stdout, stderr, rt, mode, compactJSONBodyLine)
+}
+
+func RunMyPermissions(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runMyPermissions(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunCreate(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runCreate(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunUpdate(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runUpdate(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunAssign(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAssign(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunTransitions(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runTransitions(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunTransition(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runTransition(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDelete(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunWatchers(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWatchers(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunWatch(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWatch(ctx, opts, args[0], stdout, stderr, rt, mode, true)
+}
+
+func RunUnwatch(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runWatch(ctx, opts, args[0], stdout, stderr, rt, mode, false)
+}
+
+func RunBulkSearch(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runBulkSearch(ctx, opts, args, stdout, stderr, rt, mode)
+}
+
+func RunMoveSprint(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runMoveSprint(ctx, opts, args, stdout, stderr, rt, mode)
+}
+
+func RunMoveBacklog(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runMoveBacklog(ctx, opts, args, stdout, stderr, rt, mode)
+}
+
+func RunMine(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runMine(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunStale(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runStale(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunBlockers(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runBlockers(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunDashboards(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboards(ctx, opts, stdout, stderr, rt, mode)
+}
+
+func RunDashboard(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboard(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunDashboardItemPropertyKeys(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboardItemPropertyKeys(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
+}
+
+func RunDashboardItemPropertyGet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboardItemPropertyGet(ctx, opts, args[0], args[1], args[2], stdout, stderr, rt, mode)
+}
+
+func RunDashboardItemPropertySet(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboardItemPropertySet(ctx, opts, args[0], args[1], args[2], stdout, stderr, rt, mode)
+}
+
+func RunDashboardItemPropertyDelete(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runDashboardItemPropertyDelete(ctx, opts, args[0], args[1], args[2], stdout, stderr, rt, mode)
+}
+
+func RunBoards(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileList[jira.Board](ctx, opts, stdout, stderr, rt, mode, "boards", []string{"board"}, compactBoard, func(board jira.Board) any {
+		return toBoardView(board)
+	})
+}
+
+func RunBoard(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileBoard(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunBoardIssues(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "board_issues", []string{"board", args[0], "issue"})
+}
+
+func RunBacklog(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "backlog", []string{"board", args[0], "backlog"})
+}
+
+func RunSprints(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileList[jira.Sprint](ctx, opts, stdout, stderr, rt, mode, "sprints", []string{"board", args[0], "sprint"}, compactSprint, func(sprint jira.Sprint) any {
+		return toSprintView(sprint)
+	})
+}
+
+func RunSprint(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runSprint(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunSprintIssues(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "sprint_issues", []string{"sprint", args[0], "issue"})
+}
+
+func RunSprintSummary(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runSprintSummary(ctx, opts, args, stdout, stderr, rt, mode)
+}
+
+func RunEpic(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runEpic(ctx, opts, args[0], stdout, stderr, rt, mode)
+}
+
+func RunEpicIssues(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
+	return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "epic_issues", []string{"epic", args[0], "issue"})
 }
 
 type userView struct {
@@ -233,451 +592,6 @@ type versionView struct {
 	Released    bool   `json:"released,omitempty"`
 }
 
-func Execute(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "ERR usage missing command")
-		return 1
-	}
-	if err := validateCommandArity(args); err != nil {
-		fmt.Fprintf(stderr, "ERR usage %s\n", err)
-		return 1
-	}
-
-	mode := output.ModeFromOptions(opts.JSON, opts.Raw)
-	switch args[0] {
-	case "config":
-		return runConfig(opts, args[1:], stdout, stderr, rt)
-	case "skill":
-		return runSkill(opts, args[1:], stdout, stderr, rt, mode)
-	case "probe":
-		return runProbe(ctx, opts, stdout, stderr, rt, mode)
-	case "whoami":
-		return runWhoami(ctx, opts, stdout, stderr, rt, mode)
-	case "api":
-		return runAPIPassThrough(ctx, opts, args[1:], stdout, stderr, rt, mode)
-	case "search":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage search requires JQL")
-			return 1
-		}
-		return runSearch(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "issue":
-		if len(args) >= 3 && args[1] == "properties" {
-			return runIssuePropertyKeys(ctx, opts, args[2], stdout, stderr, rt, mode)
-		}
-		if len(args) >= 4 && args[1] == "property" {
-			return runIssueProperty(ctx, opts, args[2:], stdout, stderr, rt, mode)
-		}
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage issue requires KEY")
-			return 1
-		}
-		return runIssue(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "comments":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage comments requires KEY")
-			return 1
-		}
-		return runComments(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "attachments":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage attachments requires KEY")
-			return 1
-		}
-		return runAttachments(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "attachment":
-		return runAttachmentCommand(ctx, opts, args[1:], stdout, stderr, rt, mode)
-	case "links":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage links requires KEY")
-			return 1
-		}
-		return runLinks(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "projects":
-		return runProjects(ctx, opts, stdout, stderr, rt, mode)
-	case "project":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage project requires KEY")
-			return 1
-		}
-		return runProject(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "components":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage components requires PROJECT")
-			return 1
-		}
-		return runProjectNamedList(ctx, opts, args[1], "components", "components", stdout, stderr, rt, mode)
-	case "versions":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage versions requires PROJECT")
-			return 1
-		}
-		return runProjectVersions(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "roles":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage roles requires PROJECT")
-			return 1
-		}
-		return runProjectRoles(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "role":
-		if len(args) < 3 {
-			fmt.Fprintln(stderr, "ERR usage role requires PROJECT ROLE_ID")
-			return 1
-		}
-		return runRawGet(ctx, opts, "role", []string{"project", args[1], "role", args[2]}, nil, stdout, stderr, rt, mode, compactJSONBodyLine)
-	case "project-statuses":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage project-statuses requires PROJECT")
-			return 1
-		}
-		return runRawGet(ctx, opts, "project_statuses", []string{"project", args[1], "statuses"}, nil, stdout, stderr, rt, mode, compactJSONArrayCount("project-statuses"))
-	case "fields":
-		return runFields(ctx, opts, stdout, stderr, rt, mode)
-	case "users":
-		if len(args) != 2 || args[1] != "search" {
-			fmt.Fprintln(stderr, "ERR usage expected users search --query TEXT")
-			return 1
-		}
-		return runUsersSearch(ctx, opts, stdout, stderr, rt, mode)
-	case "assignable":
-		return runAssignableUsers(ctx, opts, stdout, stderr, rt, mode)
-	case "issuetypes":
-		return runNamedList(ctx, opts, stdout, stderr, rt, mode, "issuetypes", "issuetype")
-	case "priorities":
-		return runNamedList(ctx, opts, stdout, stderr, rt, mode, "priorities", "priority")
-	case "statuses":
-		return runNamedList(ctx, opts, stdout, stderr, rt, mode, "statuses", "status")
-	case "resolutions":
-		return runNamedList(ctx, opts, stdout, stderr, rt, mode, "resolutions", "resolution")
-	case "resolution":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage resolution requires ID")
-			return 1
-		}
-		return runNamedGet(ctx, opts, args[1], stdout, stderr, rt, mode, "resolution", "resolution")
-	case "workflows":
-		return runNamedList(ctx, opts, stdout, stderr, rt, mode, "workflows", "workflow")
-	case "filters":
-		return runFilters(ctx, opts, stdout, stderr, rt, mode)
-	case "filter":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage filter requires ID")
-			return 1
-		}
-		return runFilter(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "permissions":
-		return runRawGet(ctx, opts, "permissions", []string{"permissions"}, nil, stdout, stderr, rt, mode, compactJSONBodyLine)
-	case "mypermissions":
-		return runMyPermissions(ctx, opts, stdout, stderr, rt, mode)
-	case "create":
-		return runCreate(ctx, opts, stdout, stderr, rt, mode)
-	case "update":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage update requires KEY")
-			return 1
-		}
-		return runUpdate(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "comment":
-		if len(args) == 4 && args[1] == "get" {
-			return runCommentGet(ctx, opts, args[2], args[3], stdout, stderr, rt, mode)
-		}
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage comment requires KEY")
-			return 1
-		}
-		return runComment(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "assign":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage assign requires KEY")
-			return 1
-		}
-		return runAssign(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "transitions":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage transitions requires KEY")
-			return 1
-		}
-		return runTransitions(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "transition":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage transition requires KEY")
-			return 1
-		}
-		return runTransition(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "delete":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage delete requires KEY")
-			return 1
-		}
-		return runDelete(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "watchers":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage watchers requires KEY")
-			return 1
-		}
-		return runWatchers(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "watch":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage watch requires KEY")
-			return 1
-		}
-		return runWatch(ctx, opts, args[1], stdout, stderr, rt, mode, true)
-	case "unwatch":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage unwatch requires KEY")
-			return 1
-		}
-		return runWatch(ctx, opts, args[1], stdout, stderr, rt, mode, false)
-	case "worklog":
-		if len(args) == 4 && args[1] == "get" {
-			return runWorklogGet(ctx, opts, args[2], args[3], stdout, stderr, rt, mode)
-		}
-		if len(args) != 3 || args[1] != "add" {
-			fmt.Fprintln(stderr, "ERR usage expected worklog add <KEY> or worklog get <KEY> <ID>")
-			return 1
-		}
-		return runWorklogAdd(ctx, opts, args[2], stdout, stderr, rt, mode)
-	case "link":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage expected link create|delete")
-			return 1
-		}
-		switch args[1] {
-		case "create":
-			if len(args) < 3 {
-				fmt.Fprintln(stderr, "ERR usage link create requires SOURCE_KEY")
-				return 1
-			}
-			return runLinkCreate(ctx, opts, args[2], stdout, stderr, rt, mode)
-		case "delete":
-			if len(args) < 3 {
-				fmt.Fprintln(stderr, "ERR usage link delete requires ID")
-				return 1
-			}
-			return runLinkDelete(ctx, opts, args[2], stdout, stderr, rt, mode)
-		default:
-			fmt.Fprintln(stderr, "ERR usage expected link create|delete")
-			return 1
-		}
-	case "bulk":
-		if len(args) < 3 || args[1] != "search" {
-			fmt.Fprintln(stderr, "ERR usage expected bulk search <JQL> [<JQL>...]")
-			return 1
-		}
-		return runBulkSearch(ctx, opts, args[2:], stdout, stderr, rt, mode)
-	case "move":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage expected move sprint|backlog")
-			return 1
-		}
-		switch args[1] {
-		case "sprint":
-			return runMoveSprint(ctx, opts, args[2:], stdout, stderr, rt, mode)
-		case "backlog":
-			return runMoveBacklog(ctx, opts, args[2:], stdout, stderr, rt, mode)
-		default:
-			fmt.Fprintln(stderr, "ERR usage expected move sprint|backlog")
-			return 1
-		}
-	case "mine":
-		return runMine(ctx, opts, stdout, stderr, rt, mode)
-	case "stale":
-		return runStale(ctx, opts, stdout, stderr, rt, mode)
-	case "blockers":
-		return runBlockers(ctx, opts, stdout, stderr, rt, mode)
-	case "worklogs":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage worklogs requires KEY")
-			return 1
-		}
-		return runWorklogs(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "remote-links":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage remote-links requires KEY")
-			return 1
-		}
-		return runRemoteLinks(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "remote-link":
-		if len(args) < 3 {
-			fmt.Fprintln(stderr, "ERR usage remote-link requires KEY ID")
-			return 1
-		}
-		return runRemoteLink(ctx, opts, args[1], args[2], stdout, stderr, rt, mode)
-	case "dashboards":
-		return runDashboards(ctx, opts, stdout, stderr, rt, mode)
-	case "dashboard":
-		if len(args) == 2 {
-			return runDashboard(ctx, opts, args[1], stdout, stderr, rt, mode)
-		}
-		if len(args) >= 3 && args[1] == "item" {
-			return runDashboardItem(ctx, opts, args[2:], stdout, stderr, rt, mode)
-		}
-		fmt.Fprintln(stderr, "ERR usage expected dashboard <ID> or dashboard item properties|property")
-		return 1
-	case "boards":
-		return runAgileList[jira.Board](ctx, opts, stdout, stderr, rt, mode, "boards", []string{"board"}, compactBoard, func(board jira.Board) any {
-			return toBoardView(board)
-		})
-	case "board":
-		if len(args) == 3 && args[1] == "issues" {
-			return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "board_issues", []string{"board", args[2], "issue"})
-		}
-		if len(args) == 2 {
-			return runAgileBoard(ctx, opts, args[1], stdout, stderr, rt, mode)
-		}
-		fmt.Fprintln(stderr, "ERR usage expected board <ID> or board issues <ID>")
-		return 1
-	case "backlog":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage backlog requires BOARD_ID")
-			return 1
-		}
-		return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "backlog", []string{"board", args[1], "backlog"})
-	case "sprints":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage sprints requires BOARD_ID")
-			return 1
-		}
-		return runAgileList[jira.Sprint](ctx, opts, stdout, stderr, rt, mode, "sprints", []string{"board", args[1], "sprint"}, compactSprint, func(sprint jira.Sprint) any {
-			return toSprintView(sprint)
-		})
-	case "sprint":
-		if len(args) >= 2 && args[1] == "summary" {
-			return runSprintSummary(ctx, opts, args[2:], stdout, stderr, rt, mode)
-		}
-		if len(args) == 3 && args[1] == "issues" {
-			return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "sprint_issues", []string{"sprint", args[2], "issue"})
-		}
-		if len(args) == 2 {
-			return runSprint(ctx, opts, args[1], stdout, stderr, rt, mode)
-		}
-		fmt.Fprintln(stderr, "ERR usage expected sprint <ID> or sprint issues <ID>")
-		return 1
-	case "epic":
-		if len(args) == 3 && args[1] == "issues" {
-			return runAgileIssues(ctx, opts, stdout, stderr, rt, mode, "epic_issues", []string{"epic", args[2], "issue"})
-		}
-		if len(args) == 2 {
-			return runEpic(ctx, opts, args[1], stdout, stderr, rt, mode)
-		}
-		fmt.Fprintln(stderr, "ERR usage expected epic <KEY_OR_ID> or epic issues <KEY_OR_ID>")
-		return 1
-	default:
-		fmt.Fprintf(stderr, "ERR usage unknown command %q\n", args[0])
-		return 1
-	}
-}
-
-func validateCommandArity(args []string) error {
-	switch args[0] {
-	case "config", "skill", "api":
-		return nil
-	case "probe", "whoami", "projects", "fields", "assignable", "issuetypes", "priorities", "statuses", "resolutions", "workflows", "filters", "permissions", "mypermissions", "create", "boards", "dashboards", "mine", "stale", "blockers":
-		if len(args) != 1 {
-			return fmt.Errorf("%s does not accept positional arguments", args[0])
-		}
-	case "search":
-		if len(args) != 2 {
-			return fmt.Errorf("search requires JQL")
-		}
-	case "issue":
-		switch {
-		case len(args) == 2:
-			return nil
-		case len(args) == 3 && args[1] == "properties":
-			return nil
-		case len(args) == 4 && args[1] == "property":
-			return nil
-		case len(args) == 5 && args[1] == "property":
-			return nil
-		default:
-			return fmt.Errorf("expected issue <KEY>, issue properties <KEY>, or issue property [set|delete] <KEY> <PROPERTY>")
-		}
-	case "comments", "attachments", "links", "project", "components", "versions", "roles", "project-statuses", "resolution", "filter", "update", "assign", "transitions", "transition", "delete", "watchers", "watch", "unwatch", "worklogs", "remote-links", "backlog", "sprints":
-		if len(args) != 2 {
-			return fmt.Errorf("%s requires exactly one argument", args[0])
-		}
-	case "attachment":
-		switch {
-		case len(args) == 2:
-			return nil
-		case len(args) == 3 && (args[1] == "add" || args[1] == "get" || args[1] == "download" || args[1] == "delete"):
-			return nil
-		default:
-			return fmt.Errorf("expected attachment <ID> or attachment add|get|download|delete <ID_OR_KEY>")
-		}
-	case "role", "remote-link":
-		if len(args) != 3 {
-			return fmt.Errorf("%s requires exactly two arguments", args[0])
-		}
-	case "users":
-		if len(args) != 2 || args[1] != "search" {
-			return fmt.Errorf("expected users search --query TEXT")
-		}
-	case "comment":
-		switch {
-		case len(args) == 2:
-			return nil
-		case len(args) == 4 && args[1] == "get":
-			return nil
-		default:
-			return fmt.Errorf("expected comment <KEY> or comment get <KEY> <ID>")
-		}
-	case "worklog":
-		if len(args) == 3 && args[1] == "add" {
-			return nil
-		}
-		if len(args) == 4 && args[1] == "get" {
-			return nil
-		}
-		return fmt.Errorf("expected worklog add <KEY> or worklog get <KEY> <ID>")
-	case "link":
-		if len(args) == 3 && (args[1] == "create" || args[1] == "delete") {
-			return nil
-		}
-		return fmt.Errorf("expected link create|delete")
-	case "bulk":
-		if len(args) < 3 || args[1] != "search" {
-			return fmt.Errorf("expected bulk search <JQL> [<JQL>...]")
-		}
-	case "move":
-		if len(args) < 2 || (args[1] != "sprint" && args[1] != "backlog") {
-			return fmt.Errorf("expected move sprint|backlog")
-		}
-	case "dashboard":
-		switch {
-		case len(args) == 2:
-			return nil
-		case len(args) == 5 && args[1] == "item" && args[2] == "properties":
-			return nil
-		case len(args) == 6 && args[1] == "item" && args[2] == "property":
-			return nil
-		case len(args) == 7 && args[1] == "item" && args[2] == "property" && (args[3] == "set" || args[3] == "delete"):
-			return nil
-		default:
-			return fmt.Errorf("expected dashboard <ID> or dashboard item properties|property")
-		}
-	case "board":
-		if len(args) == 2 || (len(args) == 3 && args[1] == "issues") {
-			return nil
-		}
-		return fmt.Errorf("expected board <ID> or board issues <ID>")
-	case "sprint":
-		if len(args) == 2 || (len(args) == 3 && (args[1] == "issues" || args[1] == "summary")) {
-			return nil
-		}
-		return fmt.Errorf("expected sprint <ID>, sprint issues <ID>, or sprint summary [ID]")
-	case "epic":
-		if len(args) == 2 || (len(args) == 3 && args[1] == "issues") {
-			return nil
-		}
-		return fmt.Errorf("expected epic <KEY_OR_ID> or epic issues <KEY_OR_ID>")
-	default:
-		return nil
-	}
-	return nil
-}
-
 func runConfig(opts Options, args []string, stdout, stderr io.Writer, rt Runtime) int {
 	if len(args) != 1 || args[0] != "doctor" {
 		fmt.Fprintln(stderr, "ERR usage expected config doctor")
@@ -740,7 +654,7 @@ func runSkill(opts Options, args []string, stdout, stderr io.Writer, rt Runtime,
 		fmt.Fprintln(stderr, "ERR usage --raw is not supported for skill install; use --json for structured output")
 		return 1
 	}
-	if opts.CommandBools["--global"] && commandValue(opts, "--target") != "" {
+	if opts.Global && commandValue(opts, "--target") != "" {
 		fmt.Fprintln(stderr, "ERR usage --global and --target cannot be combined")
 		return 1
 	}
@@ -750,7 +664,7 @@ func runSkill(opts Options, args []string, stdout, stderr io.Writer, rt Runtime,
 		fmt.Fprintf(stderr, "ERR skill %s\n", err)
 		return 1
 	}
-	result, err := skillinstall.Install(root, opts.CommandBools["--force"], opts.DryRun)
+	result, err := skillinstall.Install(root, opts.Force, opts.DryRun)
 	if err != nil {
 		if errors.Is(err, skillinstall.ErrTargetExists) {
 			fmt.Fprintf(stderr, "ERR skill target exists %s; use --force to replace it\n", result.Target)
@@ -800,7 +714,7 @@ func skillInstallRoot(opts Options, rt Runtime) (string, string, error) {
 		}
 		return "custom", root, nil
 	}
-	if opts.CommandBools["--global"] {
+	if opts.Global {
 		home := firstNonEmpty(rt.Env["HOME"], rt.Env["USERPROFILE"])
 		if home == "" && rt.Env["HOMEDRIVE"] != "" && rt.Env["HOMEPATH"] != "" {
 			home = rt.Env["HOMEDRIVE"] + rt.Env["HOMEPATH"]
@@ -903,7 +817,7 @@ func runAPIPassThrough(ctx context.Context, opts Options, args []string, stdout,
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
-	if err := validateAPIPassThroughEndpoint(api, method, segments, opts.DryRun || opts.CommandBools["--force"]); err != nil {
+	if err := validateAPIPassThroughEndpoint(api, method, segments, opts.DryRun || opts.Force); err != nil {
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
@@ -1405,45 +1319,6 @@ func runAttachments(ctx context.Context, opts Options, key string, stdout, stder
 	return writeCompact(stdout, stderr, lines...)
 }
 
-func runAttachmentCommand(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "ERR usage expected attachment <ID> or attachment add|download|delete")
-		return 1
-	}
-	switch args[0] {
-	case "add":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage attachment add requires KEY")
-			return 1
-		}
-		return runAttachmentAdd(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "get":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage attachment get requires ID")
-			return 1
-		}
-		return runAttachmentGet(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "download":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage attachment download requires ID")
-			return 1
-		}
-		return runAttachmentDownload(ctx, opts, args[1], stdout, stderr, rt, mode)
-	case "delete":
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, "ERR usage attachment delete requires ID")
-			return 1
-		}
-		return runAttachmentDelete(ctx, opts, args[1], stdout, stderr, rt, mode)
-	default:
-		if len(args) == 1 {
-			return runAttachmentGet(ctx, opts, args[0], stdout, stderr, rt, mode)
-		}
-		fmt.Fprintln(stderr, "ERR usage expected attachment <ID> or attachment add|download|delete")
-		return 1
-	}
-}
-
 func runAttachmentGet(ctx context.Context, opts Options, id string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
 	client, _, err := clientFromOptions(opts, rt)
 	if err != nil {
@@ -1541,7 +1416,7 @@ func runAttachmentDownload(ctx context.Context, opts Options, id string, stdout,
 			fmt.Fprintln(stderr, "ERR usage attachment download output must not be a directory")
 			return 1
 		}
-		if !opts.CommandBools["--force"] {
+		if !opts.Force {
 			fmt.Fprintln(stderr, "ERR usage attachment download output exists; use --force")
 			return 1
 		}
@@ -1586,7 +1461,7 @@ func runAttachmentDownload(ctx context.Context, opts Options, id string, stdout,
 		fmt.Fprintf(stderr, "ERR usage close output file: %s\n", closeErr)
 		return 1
 	}
-	if opts.CommandBools["--force"] {
+	if opts.Force {
 		_ = os.Remove(filePath)
 	}
 	if err := os.Rename(tempPath, filePath); err != nil {
@@ -2166,23 +2041,6 @@ func runDashboard(ctx context.Context, opts Options, id string, stdout, stderr i
 	return writeCompact(stdout, stderr, compactDashboard(dashboard))
 }
 
-func runDashboardItem(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	if len(args) == 3 && args[0] == "properties" {
-		return runDashboardItemPropertyKeys(ctx, opts, args[1], args[2], stdout, stderr, rt, mode)
-	}
-	if len(args) == 4 && args[0] == "property" {
-		return runDashboardItemPropertyGet(ctx, opts, args[1], args[2], args[3], stdout, stderr, rt, mode)
-	}
-	if len(args) == 5 && args[0] == "property" && args[1] == "set" {
-		return runDashboardItemPropertySet(ctx, opts, args[2], args[3], args[4], stdout, stderr, rt, mode)
-	}
-	if len(args) == 5 && args[0] == "property" && args[1] == "delete" {
-		return runDashboardItemPropertyDelete(ctx, opts, args[2], args[3], args[4], stdout, stderr, rt, mode)
-	}
-	fmt.Fprintln(stderr, "ERR usage expected dashboard item properties <DASHBOARD_ID> <ITEM_ID> or dashboard item property [set|delete] <DASHBOARD_ID> <ITEM_ID> <KEY>")
-	return 1
-}
-
 func runDashboardItemPropertyKeys(ctx context.Context, opts Options, dashboardID, itemID string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
 	client, _, err := clientFromOptions(opts, rt)
 	if err != nil {
@@ -2294,20 +2152,6 @@ func runDashboardItemPropertyDelete(ctx context.Context, opts Options, dashboard
 		return writeRaw(stdout, stderr, resp.Body)
 	}
 	return writeOK(stdout, stderr, mode, "dashboard_item_property_delete", plan)
-}
-
-func runIssueProperty(ctx context.Context, opts Options, args []string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
-	if len(args) == 2 {
-		return runIssuePropertyGet(ctx, opts, args[0], args[1], stdout, stderr, rt, mode)
-	}
-	if len(args) == 3 && args[0] == "set" {
-		return runIssuePropertySet(ctx, opts, args[1], args[2], stdout, stderr, rt, mode)
-	}
-	if len(args) == 3 && args[0] == "delete" {
-		return runIssuePropertyDelete(ctx, opts, args[1], args[2], stdout, stderr, rt, mode)
-	}
-	fmt.Fprintln(stderr, "ERR usage expected issue property <KEY> <PROPERTY> or issue property set|delete <KEY> <PROPERTY>")
-	return 1
 }
 
 func runIssuePropertyKeys(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
@@ -2432,7 +2276,7 @@ func runCreate(ctx context.Context, opts Options, stdout, stderr io.Writer, rt R
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
-	if opts.CommandBools["--meta"] {
+	if opts.Meta {
 		return runCreateMeta(ctx, opts, project, issueType, stdout, stderr, rt, mode)
 	}
 	summary, err := requiredCommandValue(opts, "--summary")
@@ -3855,7 +3699,7 @@ func requiredCommandValue(opts Options, name string) (string, error) {
 }
 
 func commandValue(opts Options, name string) string {
-	values := opts.CommandValues[name]
+	values := commandValues(opts, name)
 	if len(values) == 0 {
 		return ""
 	}
@@ -3863,7 +3707,68 @@ func commandValue(opts Options, name string) string {
 }
 
 func commandValues(opts Options, name string) []string {
-	return opts.CommandValues[name]
+	switch name {
+	case "--project":
+		return singleValue(opts.Project)
+	case "--issue-type":
+		return singleValue(opts.IssueType)
+	case "--issue":
+		return opts.Issues
+	case "--summary":
+		return singleValue(opts.Summary)
+	case "--body":
+		if opts.BodySet {
+			return []string{opts.Body}
+		}
+		return singleValue(opts.Body)
+	case "--field":
+		return opts.Fields
+	case "--component":
+		return opts.Components
+	case "--version":
+		return opts.Versions
+	case "--due":
+		return singleValue(opts.Due)
+	case "--priority":
+		return singleValue(opts.Priority)
+	case "--attach":
+		return opts.Attachments
+	case "--assignee":
+		return singleValue(opts.Assignee)
+	case "--id":
+		return singleValue(opts.ID)
+	case "--name":
+		return singleValue(opts.Name)
+	case "--comment":
+		return singleValue(opts.Comment)
+	case "--time":
+		return singleValue(opts.Time)
+	case "--target":
+		return singleValue(opts.Target)
+	case "--link-type":
+		return singleValue(opts.LinkType)
+	case "--query":
+		return opts.Queries
+	case "--days":
+		return singleValue(opts.Days)
+	case "--status":
+		return singleValue(opts.Status)
+	case "--sprint":
+		return singleValue(opts.Sprint)
+	case "--filter":
+		return singleValue(opts.Filter)
+	case "--file":
+		return singleValue(opts.File)
+	default:
+		return nil
+	}
+}
+
+func singleValue(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
 }
 
 func fieldMap(opts Options) (map[string]any, error) {
