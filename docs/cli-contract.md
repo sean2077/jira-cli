@@ -77,17 +77,59 @@ jira dashboard item property 10000 20000 issue.support
 
 ## Configuration Precedence
 
-1. CLI flags
-2. Environment variables
-3. Selected profile
-4. Default profile
+Configuration files are Viper-backed TOML at
+`~/.config/jira-cli/config.toml`. Viper is used for file loading and exact
+schema decoding only; command flags and business precedence remain explicit in
+the CLI/config layers. Config keys are case-sensitive and must use the exact
+snake_case keys shown in this contract.
+
+Non-secret values are layered in this order; later sources win:
+
+1. selected/default profile
+2. environment variables
+3. CLI flags
+
+Secret values resolve in this order:
+
+1. `--token-env <name>`
+2. `JIRA_API_TOKEN`
+3. `JIRA_PASSWORD`
+4. profile `token_env`
+5. profile `token`
+6. profile `password`
+
+If `--token-env` is set but the referenced env var is missing, the CLI reports
+missing token and does not fall back to profile plaintext.
+
+Example:
+
+```toml
+default_profile = "private"
+
+[profiles.private]
+type = "server"
+base_url = "https://jira.example.com"
+user = "agent"
+token_env = "JIRA_API_TOKEN"
+```
+
+Profiles may instead configure one plaintext `token` or `password`. Plaintext
+profile secrets are supported but unencrypted; do not commit or share config
+files that contain them. A profile may configure at most one of `token_env`,
+`token`, or `password`; explicit empty values are rejected. Profiles may also
+configure no secret source so CLI/env can supply one later.
+
+Profile names are case-insensitive. Dotted profile names, case-variant
+duplicates, and nested profile tables, including `[profiles.team.prod]`, are
+rejected.
 
 Required config for v1:
 
 - base URL
 - Jira type: `server`
 - username
-- token/password via env
+- token/password via `--token-env`, env, profile `token_env`, profile `token`,
+  or profile `password`
 
 ## Output Modes
 

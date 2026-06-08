@@ -28,6 +28,16 @@ command shape or flag is unclear. The CLI uses Cobra help and suggestions where
 the command scope can be resolved; other usage errors point to the nearest
 command help surface.
 
+Run `jira config doctor` when configuration is unclear. Configuration files are
+Viper-backed TOML at `~/.config/jira-cli/config.toml`; CLI/env secrets override
+profile secrets. Config keys are case-sensitive. Profiles may contain at most
+one of `token_env`, plaintext `token`, or plaintext `password`, or no secret if
+CLI/env will supply it.
+Plaintext profile secrets are accepted but unencrypted, so never echo them and
+do not commit config files containing them. Profile names are
+case-insensitive; dotted profile names, case-variant duplicates, and nested
+profile tables such as `[profiles.team.prod]` are rejected.
+
 ## Install
 
 If the `jira-cli` skill is missing from the current project, install the bundled

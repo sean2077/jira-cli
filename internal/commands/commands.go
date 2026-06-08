@@ -597,32 +597,34 @@ func runConfig(opts Options, args []string, stdout, stderr io.Writer, rt Runtime
 		fmt.Fprintln(stderr, "ERR usage expected config doctor")
 		return 1
 	}
-	values, missing, err := resolveConfig(opts, rt, false)
+	values, missing, err := resolveConfig(opts, rt, true)
 	if err != nil {
 		fmt.Fprintf(stderr, "ERR config %s\n", err)
 		return 1
 	}
 
 	result := struct {
-		OK       bool     `json:"ok"`
-		Kind     string   `json:"kind"`
-		Profile  string   `json:"profile,omitempty"`
-		Type     string   `json:"type"`
-		BaseURL  bool     `json:"baseUrl"`
-		User     bool     `json:"user"`
-		TokenEnv string   `json:"tokenEnv,omitempty"`
-		Token    bool     `json:"token"`
-		Missing  []string `json:"missing,omitempty"`
+		OK          bool     `json:"ok"`
+		Kind        string   `json:"kind"`
+		Profile     string   `json:"profile,omitempty"`
+		Type        string   `json:"type"`
+		BaseURL     bool     `json:"baseUrl"`
+		User        bool     `json:"user"`
+		TokenSource string   `json:"tokenSource,omitempty"`
+		TokenEnv    string   `json:"tokenEnv,omitempty"`
+		Token       bool     `json:"token"`
+		Missing     []string `json:"missing,omitempty"`
 	}{
-		OK:       len(missing) == 0,
-		Kind:     "config_doctor",
-		Profile:  values.Profile,
-		Type:     values.Type,
-		BaseURL:  values.BaseURL != "",
-		User:     values.User != "",
-		TokenEnv: values.TokenEnv,
-		Token:    values.TokenEnv != "" && rt.Env[values.TokenEnv] != "",
-		Missing:  missing,
+		OK:          len(missing) == 0,
+		Kind:        "config_doctor",
+		Profile:     values.Profile,
+		Type:        values.Type,
+		BaseURL:     values.BaseURL != "",
+		User:        values.User != "",
+		TokenSource: tokenSource(values),
+		TokenEnv:    tokenEnvName(values),
+		Token:       tokenAvailable(values, rt.Env),
+		Missing:     missing,
 	}
 	if opts.JSON {
 		if err := output.WriteJSON(stdout, result); err != nil {
@@ -638,7 +640,11 @@ func runConfig(opts Options, args []string, stdout, stderr io.Writer, rt Runtime
 		fmt.Fprintf(stderr, "ERR config missing=%s\n", strings.Join(missing, ","))
 		return 1
 	}
-	if err := output.WriteCompact(stdout, fmt.Sprintf("OK config type=%s base-url=set user=set token-env=%s token=set", values.Type, values.TokenEnv)); err != nil {
+	line := fmt.Sprintf("OK config type=%s base-url=set user=set token-source=%s token=set", values.Type, result.TokenSource)
+	if result.TokenEnv != "" {
+		line += " token-env=" + result.TokenEnv
+	}
+	if err := output.WriteCompact(stdout, line); err != nil {
 		fmt.Fprintf(stderr, "ERR output %s\n", err)
 		return 1
 	}
@@ -3152,7 +3158,7 @@ func clientFromOptions(opts Options, rt Runtime) (jira.Client, config.Values, er
 	return jira.Client{
 		BaseURL:    values.BaseURL,
 		User:       values.User,
-		Secret:     rt.Env[values.TokenEnv],
+		Secret:     resolvedSecret(values, rt.Env),
 		HTTPClient: rt.HTTPClient,
 		Timeout:    opts.Timeout,
 	}, values, nil
@@ -3175,6 +3181,37 @@ func resolveConfig(opts Options, rt Runtime, requireProfile bool) (config.Values
 	missing := config.Validate(values, rt.Env)
 	sort.Strings(missing)
 	return values, missing, nil
+}
+
+func resolvedSecret(values config.Values, env map[string]string) string {
+	if values.Secret != "" {
+		return values.Secret
+	}
+	if values.TokenEnv != "" {
+		return env[values.TokenEnv]
+	}
+	return ""
+}
+
+func tokenAvailable(values config.Values, env map[string]string) bool {
+	return resolvedSecret(values, env) != ""
+}
+
+func tokenSource(values config.Values) string {
+	if values.SecretSource.Kind != "" {
+		return values.SecretSource.Kind
+	}
+	if values.TokenEnv != "" {
+		return config.SecretSourceEnv
+	}
+	return ""
+}
+
+func tokenEnvName(values config.Values) string {
+	if values.TokenEnv != "" && tokenSource(values) == config.SecretSourceEnv {
+		return values.TokenEnv
+	}
+	return ""
 }
 
 func writeProbe(stdout, stderr io.Writer, mode output.Mode, result probe.Result) int {

@@ -38,8 +38,10 @@ tool:
 
 - v1 supports Basic Auth because it is practical for private bot/script usage.
 - OAuth is deferred.
-- Password/token material must come from env or a future keychain integration,
-  not plaintext profile files.
+- Password/token material can come from env, profile `token_env`, or plaintext
+  profile `token`/`password`. Plaintext profile secrets are supported for local
+  private automation but are unencrypted; prefer env or a future keychain where
+  config files may be shared, backed up, or committed.
 
 ## Platform Endpoints in V1
 

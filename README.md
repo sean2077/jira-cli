@@ -76,6 +76,39 @@ jira probe
 `JIRA_API_TOKEN` for Jira Server password-style auth. Run `jira config doctor`
 when configuration is unclear.
 
+`~/.config/jira-cli/config.toml` is a Viper-backed TOML file. CLI flags win
+over environment, environment wins over profiles, and the selected profile
+wins over the default profile. Profile names are case-insensitive, cannot
+contain dots, and cannot be repeated with only case differences. Nested profile
+tables such as `[profiles.team.prod]` are rejected. Config keys are
+case-sensitive; use the exact snake_case keys shown below.
+
+```toml
+default_profile = "private"
+
+[profiles.private]
+type = "server"
+base_url = "https://jira.example.com"
+user = "agent"
+token_env = "JIRA_API_TOKEN"
+```
+
+A profile can also contain one plaintext secret field:
+
+```toml
+[profiles.local]
+type = "server"
+base_url = "https://jira.example.com"
+user = "agent"
+token = "..."
+```
+
+Use at most one of `token_env`, `token`, or `password` per profile; omit all
+three when CLI flags or environment variables supply the secret. Plaintext
+profile secrets are accepted for local/private automation, but they are not
+encrypted; prefer env vars where the file may be shared, backed up, or checked
+into source control.
+
 ## Use
 
 The examples use `T1` as a placeholder test project key. Replace it with a

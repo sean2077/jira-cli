@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sean2077/jira-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -281,7 +282,7 @@ func TestCobraGlobalFlagsReachCommands(t *testing.T) {
 		}
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "agent" || pass != "secret-token" {
-			t.Fatalf("basic auth = %q/%q ok=%t", user, pass, ok)
+			t.Fatalf("basic auth ok=%t user_match=%t secret_match=%t", ok, user == "agent", pass == "secret-token")
 		}
 		writeJSONBody(`{"startAt":5,"maxResults":10,"total":0,"issues":[]}`)(w, r)
 	})
@@ -2365,6 +2366,22 @@ func TestWriteDryRunDoesNotRequireJiraConfig(t *testing.T) {
 	}
 }
 
+func TestWriteConfirmationValidationBeforeConfigLoading(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue"}, &stdout, &stderr, Runtime{
+		ProfileLoadError: errors.New("bad config"),
+	})
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "requires --dry-run or --yes") {
+		t.Fatalf("stderr = %q, want confirmation error", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "bad config") {
+		t.Fatalf("config loaded before confirmation validation: stderr = %q", stderr.String())
+	}
+}
+
 func TestConfigDoctorDoesNotPrintSecret(t *testing.T) {
 	rt := Runtime{Env: map[string]string{
 		"JIRA_BASE_URL":  "https://jira.example.com",
@@ -2384,6 +2401,135 @@ func TestConfigDoctorDoesNotPrintSecret(t *testing.T) {
 	if strings.Contains(out, "super-secret") || strings.Contains(stderr.String(), "super-secret") {
 		t.Fatalf("config doctor leaked secret: stdout=%q stderr=%q", out, stderr.String())
 	}
+}
+
+func TestConfigDoctorReportsProfileLoadError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"config", "doctor"}, &stdout, &stderr, Runtime{
+		ProfileLoadError: errors.New("invalid config"),
+	})
+	if code != 1 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid config") {
+		t.Fatalf("stderr = %q, want profile load error", stderr.String())
+	}
+}
+
+func TestConfigDoctorReportsRedactedProfileSecretSource(t *testing.T) {
+	rt := Runtime{
+		Profiles: config.ProfileFile{
+			DefaultProfile: "private",
+			Profiles: map[string]config.Profile{
+				"private": {Type: "server", BaseURL: "https://jira.example.com", User: "agent", Token: "profile-secret"},
+			},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"config", "doctor"}, &stdout, &stderr, rt)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"token-source=profile_token", "token=set"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %q", out, want)
+		}
+	}
+	for _, forbidden := range []string{"profile-secret", "token-env="} {
+		if strings.Contains(out, forbidden) || strings.Contains(stderr.String(), forbidden) {
+			t.Fatalf("config doctor leaked %q: stdout=%q stderr=%q", forbidden, out, stderr.String())
+		}
+	}
+}
+
+func TestConfigDoctorJSONReportsEnvOverrideWithoutSecret(t *testing.T) {
+	rt := Runtime{
+		Env: map[string]string{"JIRA_API_TOKEN": "env-secret"},
+		Profiles: config.ProfileFile{
+			DefaultProfile: "private",
+			Profiles: map[string]config.Profile{
+				"private": {Type: "server", BaseURL: "https://jira.example.com", User: "agent", Token: "profile-secret"},
+			},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"--json", "config", "doctor"}, &stdout, &stderr, rt)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "env-secret") || strings.Contains(stdout.String(), "profile-secret") {
+		t.Fatalf("config doctor leaked secret: stdout=%q", stdout.String())
+	}
+	var result struct {
+		Token       bool   `json:"token"`
+		TokenSource string `json:"tokenSource"`
+		TokenEnv    string `json:"tokenEnv"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json = %q: %v", stdout.String(), err)
+	}
+	if !result.Token || result.TokenSource != "env" || result.TokenEnv != "JIRA_API_TOKEN" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestProfileDirectTokenAuthenticates(t *testing.T) {
+	server := authCheckingSearchServer(t, "agent", "profile-secret")
+	defer server.Close()
+
+	rt := Runtime{
+		HTTPClient: server.Client(),
+		Profiles: config.ProfileFile{
+			DefaultProfile: "private",
+			Profiles: map[string]config.Profile{
+				"private": {Type: "server", BaseURL: server.URL, User: "agent", Token: "profile-secret"},
+			},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"search", "project = JCLI"}, &stdout, &stderr, rt)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestEnvSecretOverridesProfileDirectToken(t *testing.T) {
+	server := authCheckingSearchServer(t, "agent", "env-secret")
+	defer server.Close()
+
+	rt := Runtime{
+		Env:        map[string]string{"JIRA_API_TOKEN": "env-secret"},
+		HTTPClient: server.Client(),
+		Profiles: config.ProfileFile{
+			DefaultProfile: "private",
+			Profiles: map[string]config.Profile{
+				"private": {Type: "server", BaseURL: server.URL, User: "agent", Token: "profile-secret"},
+			},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"search", "project = JCLI"}, &stdout, &stderr, rt)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func authCheckingSearchServer(t *testing.T, wantUser, wantSecret string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/search", func(w http.ResponseWriter, r *http.Request) {
+		user, secret, ok := r.BasicAuth()
+		if !ok || user != wantUser || secret != wantSecret {
+			t.Fatalf("basic auth ok=%t user_match=%t secret_match=%t", ok, user == wantUser, secret == wantSecret)
+		}
+		writeJSONBody(`{"startAt":0,"maxResults":50,"total":0,"issues":[]}`)(w, r)
+	})
+	return httptest.NewServer(mux)
 }
 
 func runtimeForServer(server *httptest.Server) Runtime {
