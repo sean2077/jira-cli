@@ -91,6 +91,7 @@ jira components T1
 jira mine --days 3
 jira dashboards --filter my
 jira attachment add T1-123 --file ./screenshot.png --dry-run
+jira create --project T1 --issue-type Task --summary 'Fix login' --component UI --due 2026-06-30 --attach ./screenshot.png --dry-run
 jira api get filter/favourite --query expand=sharedUsers --json
 jira create --project T1 --issue-type Bug --summary 'Fix login' --dry-run
 jira --json issue T1-123
@@ -103,7 +104,10 @@ Writes should start with `--dry-run`. Actual Jira writes require explicit
 confirmation with `--yes`, such as `jira comment T1-123 --body '...' --yes` or
 `jira delete T1-123 --yes`. Attachment upload uses a typed multipart command,
 `jira attachment add <KEY> --file PATH --yes`, rather than the generic JSON
-`jira api` pass-through.
+`jira api` pass-through. For create/update, common Web-form fields have direct
+flags: `--component`, `--version`, `--due`, and `--priority`; use `--field`
+for less common Jira fields. `jira create` also accepts `--attach PATH` so a
+new issue and its first evidence file can be created in one command.
 
 ## Agent Skill
 

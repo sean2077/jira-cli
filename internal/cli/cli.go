@@ -262,7 +262,7 @@ func ParseArgs(args []string) (Options, []string, error) {
 
 func isCommandStringFlag(name string) bool {
 	switch name {
-	case "--project", "--issue-type", "--issue", "--summary", "--body", "--field", "--assignee", "--id", "--name", "--comment", "--time", "--target", "--link-type", "--query", "--days", "--status", "--sprint", "--filter", "--file":
+	case "--project", "--issue-type", "--issue", "--summary", "--body", "--field", "--component", "--version", "--due", "--priority", "--attach", "--assignee", "--id", "--name", "--comment", "--time", "--target", "--link-type", "--query", "--days", "--status", "--sprint", "--filter", "--file":
 		return true
 	default:
 		return false
@@ -326,8 +326,8 @@ Agile:
   jira sprint summary --sprint ID | epic <KEY_OR_ID> | epic issues <KEY_OR_ID>
 
 Writes:
-  jira create --project KEY --issue-type NAME --summary TEXT [--body TEXT] [--field k=v] [--dry-run|--yes]
-  jira update <KEY> --field k=v [--dry-run|--yes]
+  jira create --project KEY --issue-type NAME --summary TEXT [--body TEXT] [--component ID|NAME] [--version ID|NAME] [--due YYYY-MM-DD] [--priority ID|NAME] [--attach PATH] [--field k=v] [--dry-run|--yes]
+  jira update <KEY> [--component ID|NAME] [--version ID|NAME] [--due YYYY-MM-DD] [--priority ID|NAME] [--field k=v] [--dry-run|--yes]
   jira comment <KEY> --body TEXT [--dry-run|--yes]
   jira issue property set <KEY> <PROPERTY> --body JSON [--dry-run|--yes]
   jira issue property delete <KEY> <PROPERTY> [--dry-run|--yes]

@@ -279,17 +279,38 @@ Must:
 Must:
 
 - accept project, type, summary, optional body/fields
+- support first-class common create/update field flags:
+  `--component ID|NAME`, `--version ID|NAME`, `--due YYYY-MM-DD`, and
+  `--priority ID|NAME`
+- support repeated `--attach PATH` on `jira create`; after issue creation
+  succeeds, upload each file through the typed multipart attachment endpoint
+- map numeric component/version/priority values to Jira `{id: ...}` objects and
+  non-numeric values to `{name: ...}` objects
+- validate `--due` locally as `YYYY-MM-DD`
+- parse `--field name={...}` and `--field name=[...]` as JSON object/array
+  values so required Jira fields such as components and versions can be set;
+  keep other `--field name=value` values as strings
 - require `--dry-run` or `--yes` for issue creation
 - support read-only `--meta` lookup through `GET /rest/api/2/issue/createmeta`
   without requiring a summary or creating an issue
+- make compact `--meta` output actionable: list additional required fields,
+  allowed values where available, and copy-ready direct flag, `--field`, or
+  `--body` examples
+- when a requested issue type does not match the project metadata, list available
+  project issue type names in compact output
 - suggest `createmeta` when Jira rejects field payloads
-- support dry-run display
+- support dry-run display of the actual `fields` object that would be sent to
+  Jira, including structured object/array `--field` values and planned
+  attachments
 
 ### `jira update <KEY>`
 
 Must:
 
 - accept field updates
+- support the same common field flags as `jira create`
+- parse `--field name={...}` and `--field name=[...]` as JSON object/array
+  values; keep other `--field name=value` values as strings
 - require `--dry-run` or `--yes`
 - suggest `editmeta` when Jira rejects field payloads
 - support dry-run display

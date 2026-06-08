@@ -56,6 +56,7 @@ Comment:
 
 ```bash
 jira comment JCLI-123 --body 'Validated locally; ready for review.' --dry-run
+jira create --project JCLI --issue-type Task --summary 'Fix login' --component UI --due 2026-06-30 --attach ./screenshot.png --dry-run
 ```
 
 Transition:
@@ -128,6 +129,10 @@ jira delete JCLI-123 --yes
 - Use normal Jira writes such as create, update, comment, assign, transition,
   watch, worklog add, link create/delete, and Agile move only with `--dry-run`
   or `--yes`.
+- For create/update, prefer direct common field flags (`--component`,
+  `--version`, `--due`, `--priority`) before falling back to raw `--field`.
+- Use `jira create ... --attach PATH` when a new issue should include an
+  evidence file immediately.
 - Use attachment upload/delete only with `--dry-run` or `--yes`; download
   refuses to overwrite local files unless `--force` is present.
 - Never echo secrets.

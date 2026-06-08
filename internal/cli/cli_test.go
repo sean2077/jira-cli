@@ -988,6 +988,58 @@ func TestAttachmentDownloadRejectsUnsafeContentURLBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestCreateWithAttachmentAgainstFakeServer(t *testing.T) {
+	tempDir := t.TempDir()
+	uploadPath := filepath.Join(tempDir, "proof.txt")
+	if err := os.WriteFile(uploadPath, []byte("proof"), 0o600); err != nil {
+		t.Fatalf("write upload file: %v", err)
+	}
+	var uploadCalled bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("create method = %s", r.Method)
+		}
+		writeJSONBody(`{"id":"10000","key":"JCLI-10"}`)(w, r)
+	})
+	mux.HandleFunc("/rest/api/2/issue/JCLI-10/attachments", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("attachment upload method = %s", r.Method)
+		}
+		if got := r.Header.Get("X-Atlassian-Token"); got != "no-check" {
+			t.Fatalf("X-Atlassian-Token = %q", got)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("missing multipart file: %v", err)
+		}
+		defer file.Close()
+		body, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("read multipart file: %v", err)
+		}
+		if header.Filename != "proof.txt" || string(body) != "proof" {
+			t.Fatalf("uploaded filename=%q body=%q", header.Filename, string(body))
+		}
+		uploadCalled = true
+		writeJSONBody(`[{"id":"700","filename":"proof.txt","size":5,"mimeType":"text/plain"}]`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--attach", uploadPath, "--yes"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "OK create attachments=1 issue=JCLI-10\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if !uploadCalled {
+		t.Fatal("attachment upload was not called")
+	}
+}
+
 func TestRawIssuePrintsUnmodifiedJiraBody(t *testing.T) {
 	raw := `not-json-from-jira`
 	mux := http.NewServeMux()
@@ -1054,7 +1106,7 @@ func TestCreateMetaIsReadOnly(t *testing.T) {
 		if query.Get("projectKeys") != "JCLI" || query.Get("issuetypeNames") != "Bug" || query.Get("expand") != "projects.issuetypes.fields" {
 			t.Fatalf("createmeta query = %s", r.URL.RawQuery)
 		}
-		writeJSONBody(`{"projects":[{"key":"JCLI","issuetypes":[{"name":"Bug","fields":{"summary":{"required":true}}}]}]}`)(w, r)
+		writeJSONBody(`{"projects":[{"key":"JCLI","issuetypes":[{"name":"Bug","fields":{"summary":{"name":"Summary","required":true},"components":{"name":"Component/s","required":true,"schema":{"type":"array","items":"component","system":"components"},"allowedValues":[{"id":"400","name":"UI"}]},"description":{"name":"Description","required":true,"schema":{"type":"string","system":"description"}},"duedate":{"name":"Due Date","required":true,"schema":{"type":"date","system":"duedate"}},"versions":{"name":"Affects Version/s","required":true,"schema":{"type":"array","items":"version","system":"versions"},"allowedValues":[{"id":"499","name":"0.9","released":true},{"id":"500","name":"1.0","released":false}]}}}]}]}`)(w, r)
 	})
 	mux.HandleFunc("/rest/api/2/issue", func(_ http.ResponseWriter, r *http.Request) {
 		t.Fatalf("create --meta must not call %s %s", r.Method, r.URL.Path)
@@ -1070,8 +1122,50 @@ func TestCreateMetaIsReadOnly(t *testing.T) {
 	if !createmetaCalled {
 		t.Fatal("createmeta endpoint was not called")
 	}
-	if got, want := stdout.String(), "OK createmeta project=JCLI issue-type=Bug\n"; got != want {
-		t.Fatalf("stdout = %q, want %q", got, want)
+	out := stdout.String()
+	for _, want := range []string{
+		"OK createmeta project=JCLI issue-type=Bug",
+		"4 additional required fields",
+		"components Component/s allowed=400:UI example=--component 400",
+		"description Description example=--body '...'",
+		"duedate Due Date example=--due YYYY-MM-DD",
+		"versions Affects Version/s allowed=500:1.0,499:0.9 example=--version 500",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q in %q", want, out)
+		}
+	}
+}
+
+func TestCreateMetaListsAvailableIssueTypesWhenNameDoesNotMatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/2/issue/createmeta", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("projectKeys") != "JCLI" {
+			t.Fatalf("createmeta query = %s", r.URL.RawQuery)
+		}
+		if query.Get("issuetypeNames") == "Task" {
+			writeJSONBody(`{"projects":[{"key":"JCLI","issuetypes":[]}]}`)(w, r)
+			return
+		}
+		if query.Get("issuetypeNames") != "" {
+			t.Fatalf("unexpected issue type query = %s", r.URL.RawQuery)
+		}
+		writeJSONBody(`{"projects":[{"key":"JCLI","issuetypes":[{"name":"任务"},{"name":"Bug"}]}]}`)(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"create", "--project", "JCLI", "--issue-type", "Task", "--meta"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"0 issue-types matched", "available issue-types: Bug, 任务"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q in %q", want, out)
+		}
 	}
 }
 
@@ -1467,6 +1561,29 @@ func TestSafeWriteCommandsAgainstFakeServer(t *testing.T) {
 		if fields["summary"] != "New issue" {
 			t.Fatalf("create summary = %#v", fields["summary"])
 		}
+		components, ok := fields["components"].([]any)
+		if !ok || len(components) != 1 {
+			t.Fatalf("create components = %#v", fields["components"])
+		}
+		component, ok := components[0].(map[string]any)
+		if !ok || component["id"] != "10000" {
+			t.Fatalf("create component = %#v", components[0])
+		}
+		versions, ok := fields["versions"].([]any)
+		if !ok || len(versions) != 1 {
+			t.Fatalf("create versions = %#v", fields["versions"])
+		}
+		version, ok := versions[0].(map[string]any)
+		if !ok || version["id"] != "10113" {
+			t.Fatalf("create version = %#v", versions[0])
+		}
+		if fields["duedate"] != "2026-06-30" {
+			t.Fatalf("create duedate = %#v", fields["duedate"])
+		}
+		priority, ok := fields["priority"].(map[string]any)
+		if !ok || priority["id"] != "3" {
+			t.Fatalf("create priority = %#v", fields["priority"])
+		}
 		writeJSONBody(`{"id":"10000","key":"JCLI-10"}`)(w, r)
 	})
 	mux.HandleFunc("/rest/api/2/issue/JCLI-10", func(w http.ResponseWriter, r *http.Request) {
@@ -1577,7 +1694,7 @@ func TestSafeWriteCommandsAgainstFakeServer(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "create", args: []string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--yes"}, want: "OK create issue=JCLI-10\n"},
+		{name: "create", args: []string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--component", "10000", "--version", "10113", "--due", "2026-06-30", "--priority", "3", "--yes"}, want: "OK create issue=JCLI-10\n"},
 		{name: "update 204", args: []string{"update", "JCLI-10", "--field", "summary=Updated", "--yes"}, want: "OK update issue=JCLI-10\n"},
 		{name: "comment", args: []string{"comment", "JCLI-10", "--body", "Looks good", "--yes"}, want: "OK comment id=101 issue=JCLI-10\n"},
 		{name: "assign 204", args: []string{"assign", "JCLI-10", "--assignee", "jdoe", "--yes"}, want: "OK assign assignee=jdoe issue=JCLI-10\n"},
@@ -1635,6 +1752,40 @@ func TestWriteCommandsRequireIntentBeforeConfig(t *testing.T) {
 				t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestStructuredFieldRejectsInvalidJSONBeforeHTTP(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--field", "components=[{", "--yes"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 1 || !strings.Contains(stderr.String(), "object/array values must be valid JSON") {
+		t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if called {
+		t.Fatal("invalid structured field allowed an HTTP request")
+	}
+}
+
+func TestCommonIssueFieldFlagsRejectInvalidDueBeforeHTTP(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := MainWithRuntime([]string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--due", "2026/06/30", "--yes"}, &stdout, &stderr, runtimeForServer(server))
+	if code != 1 || !strings.Contains(stderr.String(), "--due must be YYYY-MM-DD") {
+		t.Fatalf("code = %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if called {
+		t.Fatal("invalid due date allowed an HTTP request")
 	}
 }
 
@@ -2104,7 +2255,10 @@ func TestWriteDryRunDoesNotRequireJiraConfig(t *testing.T) {
 		args []string
 		want string
 	}{
+		{name: "create", args: []string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--field", `components=[{"id":"10000"}]`, "--dry-run"}, want: `"components":[{"id":"10000"}]`},
+		{name: "create attach", args: []string{"create", "--project", "JCLI", "--issue-type", "Bug", "--summary", "New issue", "--attach", "/tmp/proof.txt", "--dry-run"}, want: "attachments=[/tmp/proof.txt]"},
 		{name: "update", args: []string{"update", "JCLI-10", "--field", "summary=Updated", "--dry-run"}, want: "DRY-RUN update"},
+		{name: "update due", args: []string{"update", "JCLI-10", "--due", "2026-06-30", "--dry-run"}, want: `"duedate":"2026-06-30"`},
 		{name: "link delete", args: []string{"link", "delete", "300", "--dry-run"}, want: "DRY-RUN link_delete id=300"},
 		{name: "move sprint", args: []string{"move", "sprint", "--sprint", "7", "--issue", "JCLI-10", "--dry-run"}, want: "DRY-RUN move_sprint issues=[JCLI-10] sprint=7"},
 		{name: "move backlog", args: []string{"move", "backlog", "--issue", "JCLI-10", "--issue", "JCLI-11", "--dry-run"}, want: "DRY-RUN move_backlog issues=[JCLI-10 JCLI-11]"},

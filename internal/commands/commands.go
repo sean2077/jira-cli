@@ -177,6 +177,37 @@ type attachmentView struct {
 	Created  string   `json:"created,omitempty"`
 }
 
+type createMetaSummary struct {
+	Projects []createMetaProject `json:"projects"`
+}
+
+type createMetaProject struct {
+	Key        string                `json:"key,omitempty"`
+	Name       string                `json:"name,omitempty"`
+	IssueTypes []createMetaIssueType `json:"issuetypes,omitempty"`
+}
+
+type createMetaIssueType struct {
+	ID     string                     `json:"id,omitempty"`
+	Name   string                     `json:"name,omitempty"`
+	Fields map[string]createMetaField `json:"fields,omitempty"`
+}
+
+type createMetaField struct {
+	Name         string           `json:"name,omitempty"`
+	Required     bool             `json:"required,omitempty"`
+	Schema       createMetaSchema `json:"schema,omitempty"`
+	AllowedValue []map[string]any `json:"allowedValues,omitempty"`
+	DefaultValue map[string]any   `json:"defaultValue,omitempty"`
+}
+
+type createMetaSchema struct {
+	Type   string `json:"type,omitempty"`
+	Items  string `json:"items,omitempty"`
+	System string `json:"system,omitempty"`
+	Custom string `json:"custom,omitempty"`
+}
+
 type filterView struct {
 	ID        string   `json:"id,omitempty"`
 	Name      string   `json:"name,omitempty"`
@@ -2420,9 +2451,17 @@ func runCreate(ctx context.Context, opts Options, stdout, stderr io.Writer, rt R
 	if body := commandValue(opts, "--body"); body != "" {
 		fields["description"] = body
 	}
+	if err := applyCommonIssueFieldFlags(fields, opts); err != nil {
+		fmt.Fprintf(stderr, "ERR usage %s\n", err)
+		return 1
+	}
 	payload := map[string]any{"fields": fields}
+	attachFiles := commandValues(opts, "--attach")
 	if opts.DryRun {
-		return writeDryRun(stdout, stderr, mode, "create", map[string]any{"project": project, "issueType": issueType, "summary": summary})
+		if len(attachFiles) > 0 {
+			payload["attachments"] = attachFiles
+		}
+		return writeDryRun(stdout, stderr, mode, "create", payload)
 	}
 	if !requireWriteConfirmation(opts, stderr, "create") {
 		return 1
@@ -2440,7 +2479,24 @@ func runCreate(ctx context.Context, opts Options, stdout, stderr io.Writer, rt R
 	if mode == output.Raw {
 		return writeRaw(stdout, stderr, resp.Body)
 	}
-	return writeOK(stdout, stderr, mode, "create", map[string]any{"issue": firstNonEmpty(result.Key, result.ID)})
+	issueKey := firstNonEmpty(result.Key, result.ID)
+	uploaded, ok := uploadCreateAttachments(ctx, client, issueKey, attachFiles, stderr, mode)
+	if !ok {
+		return 1
+	}
+	if mode == output.JSON {
+		return writeJSON(stdout, stderr, struct {
+			OK          bool             `json:"ok"`
+			Kind        string           `json:"kind"`
+			Issue       string           `json:"issue"`
+			Attachments []attachmentView `json:"attachments,omitempty"`
+		}{OK: true, Kind: "create", Issue: issueKey, Attachments: uploaded})
+	}
+	resultFields := map[string]any{"issue": issueKey}
+	if len(attachFiles) > 0 {
+		resultFields["attachments"] = len(uploaded)
+	}
+	return writeOK(stdout, stderr, mode, "create", resultFields)
 }
 
 func runCreateMeta(ctx context.Context, opts Options, project, issueType string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
@@ -2471,7 +2527,53 @@ func runCreateMeta(ctx context.Context, opts Options, project, issueType string,
 			Metadata  map[string]any `json:"metadata"`
 		}{OK: true, Kind: "createmeta", Project: project, IssueType: issueType, Metadata: metadata})
 	}
-	return writeCompact(stdout, stderr, fmt.Sprintf("OK createmeta project=%s issue-type=%s", project, issueType))
+	lines := compactCreateMeta(resp.Body, project, issueType)
+	if createMetaIssueTypeCount(resp.Body) == 0 {
+		query := url.Values{
+			"projectKeys": {project},
+			"expand":      {"projects.issuetypes"},
+		}
+		if allTypesResp, err := client.Get(ctx, jira.PlatformAPI, []string{"issue", "createmeta"}, query, nil); err == nil {
+			if names := createMetaIssueTypeNames(allTypesResp.Body); len(names) > 0 {
+				lines = append(lines, "available issue-types: "+strings.Join(names, ", "))
+			}
+		}
+	}
+	return writeCompact(stdout, stderr, lines...)
+}
+
+func uploadCreateAttachments(ctx context.Context, client jira.Client, issueKey string, files []string, stderr io.Writer, mode output.Mode) ([]attachmentView, bool) {
+	if len(files) == 0 {
+		return nil, true
+	}
+	uploaded := []attachmentView{}
+	for _, filePath := range files {
+		file, err := os.Open(filePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "ERR usage create succeeded issue=%s but open attachment file failed: %s\n", issueKey, err)
+			return nil, false
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			fmt.Fprintf(stderr, "ERR usage create succeeded issue=%s but stat attachment file failed: %s\n", issueKey, err)
+			return nil, false
+		}
+		if info.IsDir() {
+			_ = file.Close()
+			fmt.Fprintf(stderr, "ERR usage create succeeded issue=%s but attachment file must not be a directory\n", issueKey)
+			return nil, false
+		}
+		var attachments []jira.Attachment
+		_, err = client.PostMultipartFile(ctx, jira.PlatformAPI, []string{"issue", issueKey, "attachments"}, "file", filepath.Base(filePath), file, decodeOut(mode, &attachments))
+		_ = file.Close()
+		if err != nil {
+			fmt.Fprintf(stderr, "ERR application create succeeded issue=%s but attachment upload failed: %s\n", issueKey, err)
+			return nil, false
+		}
+		uploaded = append(uploaded, toAttachmentViews(attachments)...)
+	}
+	return uploaded, true
 }
 
 func runUpdate(ctx context.Context, opts Options, key string, stdout, stderr io.Writer, rt Runtime, mode output.Mode) int {
@@ -2480,8 +2582,12 @@ func runUpdate(ctx context.Context, opts Options, key string, stdout, stderr io.
 		fmt.Fprintf(stderr, "ERR usage %s\n", err)
 		return 1
 	}
+	if err := applyCommonIssueFieldFlags(fields, opts); err != nil {
+		fmt.Fprintf(stderr, "ERR usage %s\n", err)
+		return 1
+	}
 	if len(fields) == 0 {
-		fmt.Fprintln(stderr, "ERR usage update requires at least one --field name=value")
+		fmt.Fprintln(stderr, "ERR usage update requires at least one field flag")
 		return 1
 	}
 	if opts.DryRun {
@@ -3294,7 +3400,7 @@ func writeDryRun(stdout, stderr io.Writer, mode output.Mode, kind string, plan m
 	}
 	parts := []string{"DRY-RUN", kind}
 	for _, key := range sortedKeys(plan) {
-		parts = append(parts, fmt.Sprintf("%s=%v", key, plan[key]))
+		parts = append(parts, fmt.Sprintf("%s=%s", key, compactPlanValue(plan[key])))
 	}
 	return writeCompact(stdout, stderr, strings.Join(parts, " "))
 }
@@ -3767,9 +3873,94 @@ func fieldMap(opts Options) (map[string]any, error) {
 		if !ok || strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("--field must be name=value")
 		}
-		fields[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		parsed, err := fieldValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("--field %s: %w", strings.TrimSpace(key), err)
+		}
+		fields[strings.TrimSpace(key)] = parsed
 	}
 	return fields, nil
+}
+
+func applyCommonIssueFieldFlags(fields map[string]any, opts Options) error {
+	if components := commandValues(opts, "--component"); len(components) > 0 {
+		values, err := jiraReferenceList(components)
+		if err != nil {
+			return fmt.Errorf("--component %w", err)
+		}
+		fields["components"] = values
+	}
+	if versions := commandValues(opts, "--version"); len(versions) > 0 {
+		values, err := jiraReferenceList(versions)
+		if err != nil {
+			return fmt.Errorf("--version %w", err)
+		}
+		fields["versions"] = values
+	}
+	if due := strings.TrimSpace(commandValue(opts, "--due")); due != "" {
+		if _, err := time.Parse("2006-01-02", due); err != nil {
+			return fmt.Errorf("--due must be YYYY-MM-DD")
+		}
+		fields["duedate"] = due
+	}
+	if priority := commandValue(opts, "--priority"); priority != "" {
+		value, err := jiraReference(priority)
+		if err != nil {
+			return fmt.Errorf("--priority %w", err)
+		}
+		fields["priority"] = value
+	}
+	return nil
+}
+
+func jiraReferenceList(values []string) ([]map[string]string, error) {
+	refs := make([]map[string]string, 0, len(values))
+	for _, value := range values {
+		ref, err := jiraReference(value)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+func jiraReference(value string) (map[string]string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, fmt.Errorf("must not be empty")
+	}
+	if allDigits(trimmed) {
+		return map[string]string{"id": trimmed}, nil
+	}
+	return map[string]string{"name": trimmed}, nil
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func fieldValue(value string) (any, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return trimmed, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, fmt.Errorf("object/array values must be valid JSON")
+	}
+	return parsed, nil
 }
 
 func commandJSONBody(opts Options) (json.RawMessage, string, error) {
@@ -3970,6 +4161,261 @@ func compactJSONRaw(raw json.RawMessage) string {
 		return clean(string(raw))
 	}
 	return compacted.String()
+}
+
+func compactPlanValue(value any) string {
+	switch typed := value.(type) {
+	case json.RawMessage:
+		return compactJSONRaw(typed)
+	case map[string]any, []any:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprintf("%v", value)
+		}
+		return compactJSONRaw(encoded)
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+func compactCreateMeta(body []byte, project, issueType string) []string {
+	lines := []string{fmt.Sprintf("OK createmeta project=%s issue-type=%s", project, issueType)}
+	meta, ok := parseCreateMeta(body)
+	if !ok {
+		return lines
+	}
+	var selected *createMetaIssueType
+	for i := range meta.Projects {
+		for j := range meta.Projects[i].IssueTypes {
+			if strings.EqualFold(meta.Projects[i].IssueTypes[j].Name, issueType) || meta.Projects[i].IssueTypes[j].ID == issueType {
+				selected = &meta.Projects[i].IssueTypes[j]
+				break
+			}
+		}
+		if selected != nil {
+			break
+		}
+	}
+	if selected == nil {
+		lines = append(lines, "0 issue-types matched")
+		return lines
+	}
+	required := requiredCreateFields(*selected)
+	if len(required) == 0 {
+		lines = append(lines, "0 additional required fields")
+		return lines
+	}
+	lines = append(lines, fmt.Sprintf("%d additional required fields", len(required)))
+	for _, id := range required {
+		field := selected.Fields[id]
+		line := fmt.Sprintf("%s %s", id, clean(firstNonEmpty(field.Name, id)))
+		if allowed := compactAllowedValues(field); allowed != "" {
+			line += " allowed=" + allowed
+		}
+		if example := createFieldExample(id, field); example != "" {
+			line += " example=" + example
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func createMetaIssueTypeCount(body []byte) int {
+	meta, ok := parseCreateMeta(body)
+	if !ok {
+		return -1
+	}
+	count := 0
+	for _, project := range meta.Projects {
+		count += len(project.IssueTypes)
+	}
+	return count
+}
+
+func createMetaIssueTypeNames(body []byte) []string {
+	meta, ok := parseCreateMeta(body)
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, project := range meta.Projects {
+		for _, issueType := range project.IssueTypes {
+			name := firstNonEmpty(issueType.Name, issueType.ID)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func parseCreateMeta(body []byte) (createMetaSummary, bool) {
+	var meta createMetaSummary
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return createMetaSummary{}, false
+	}
+	return meta, true
+}
+
+func requiredCreateFields(issueType createMetaIssueType) []string {
+	keys := make([]string, 0, len(issueType.Fields))
+	for id, field := range issueType.Fields {
+		if !field.Required {
+			continue
+		}
+		switch id {
+		case "project", "issuetype", "summary":
+			continue
+		}
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func compactAllowedValues(field createMetaField) string {
+	values := field.AllowedValue
+	if len(values) == 0 {
+		return ""
+	}
+	values = recommendedFirstAllowedValues(field)
+	limit := minPositive(3, len(values))
+	parts := make([]string, 0, limit+1)
+	for _, value := range values[:limit] {
+		id, name := allowedValueIDName(value)
+		parts = append(parts, firstNonEmpty(joinIDName(id, name), id, name, "-"))
+	}
+	if len(values) > limit {
+		parts = append(parts, fmt.Sprintf("+%d more", len(values)-limit))
+	}
+	return strings.Join(parts, ",")
+}
+
+func recommendedFirstAllowedValues(field createMetaField) []map[string]any {
+	recommended, ok := recommendedAllowedValue(field)
+	if !ok {
+		return field.AllowedValue
+	}
+	values := []map[string]any{recommended}
+	recID, recName := allowedValueIDName(recommended)
+	for _, value := range field.AllowedValue {
+		id, name := allowedValueIDName(value)
+		if id == recID && name == recName {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
+}
+
+func createFieldExample(id string, field createMetaField) string {
+	if id == "description" || field.Schema.System == "description" {
+		return "--body '...'"
+	}
+	if field.Schema.System == "duedate" || id == "duedate" {
+		return "--due YYYY-MM-DD"
+	}
+	if value, ok := recommendedAllowedValue(field); ok {
+		ref := recommendedReferenceValue(value)
+		switch id {
+		case "components":
+			return "--component " + ref
+		case "versions":
+			return "--version " + ref
+		case "priority":
+			return "--priority " + ref
+		default:
+			return "--field " + id + "=" + shellJSONExample(createFieldJSONValue(field, value))
+		}
+	}
+	switch field.Schema.Type {
+	case "array":
+		return "--field " + id + "=" + shellJSONExample([]any{})
+	case "number", "integer":
+		return "--field " + id + "=0"
+	default:
+		return "--field " + id + "=VALUE"
+	}
+}
+
+func recommendedAllowedValue(field createMetaField) (map[string]any, bool) {
+	if len(field.DefaultValue) > 0 {
+		return field.DefaultValue, true
+	}
+	var fallback map[string]any
+	for _, value := range field.AllowedValue {
+		if fallback == nil {
+			fallback = value
+		}
+		archived, _ := value["archived"].(bool)
+		released, hasReleased := value["released"].(bool)
+		overdue, _ := value["overdue"].(bool)
+		if !archived && !overdue && (!hasReleased || !released) {
+			return value, true
+		}
+	}
+	for _, value := range field.AllowedValue {
+		archived, _ := value["archived"].(bool)
+		released, hasReleased := value["released"].(bool)
+		if !archived && (!hasReleased || !released) {
+			return value, true
+		}
+	}
+	if fallback != nil {
+		return fallback, true
+	}
+	return nil, false
+}
+
+func createFieldJSONValue(field createMetaField, value map[string]any) any {
+	id, name := allowedValueIDName(value)
+	item := map[string]string{}
+	if id != "" {
+		item["id"] = id
+	} else if name != "" {
+		item["name"] = name
+	}
+	if field.Schema.Type == "array" {
+		return []map[string]string{item}
+	}
+	return item
+}
+
+func recommendedReferenceValue(value map[string]any) string {
+	id, name := allowedValueIDName(value)
+	return firstNonEmpty(id, name, "VALUE")
+}
+
+func shellJSONExample(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "VALUE"
+	}
+	return "'" + string(encoded) + "'"
+}
+
+func allowedValueIDName(value map[string]any) (string, string) {
+	id, _ := value["id"].(string)
+	name, _ := value["name"].(string)
+	key, _ := value["key"].(string)
+	return firstNonEmpty(id, key), name
+}
+
+func joinIDName(id, name string) string {
+	switch {
+	case id != "" && name != "":
+		return id + ":" + clean(name)
+	case id != "":
+		return id
+	case name != "":
+		return clean(name)
+	default:
+		return ""
+	}
 }
 
 func commandDays(opts Options, defaultDays int) (int, error) {
